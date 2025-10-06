@@ -2,6 +2,9 @@ import os, time, threading, requests, math, json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 import feedparser
+import functools
+print = functools.partial(print, flush=True)
+
 
 # 🔗 Webhook destino (Make)
 WEBHOOK_URL = "https://hook.eu2.make.com/rqycnm09n1dvatljeuyptxzsh2jhnx6t"
