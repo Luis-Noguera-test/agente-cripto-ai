@@ -28,7 +28,7 @@ COINS = {
     "XRPUSDT": "ripple"
 }
 
-LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "300"))
+LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))
 REPORT_EVERY_HOURS = int(os.environ.get("REPORT_EVERY_HOURS", "4"))
 SMA_FAST = int(os.environ.get("SMA_FAST", "6"))
 SMA_SLOW = int(os.environ.get("SMA_SLOW", "70"))
@@ -263,18 +263,24 @@ def report_payload():
 
 # ---------- Bucles ----------
 def scan_loop():
-    log.info("scan loop %ss", LOOP_SECONDS)
+    log.info("scan loop %ss (1 símbolo por iteración)", LOOP_SECONDS)
+    index = 0
     while True:
         try:
-            for s in SYMBOLS:
-                log.info("🔍 Escaneando %s ...", s)
-                sig = evaluate_symbol(s)
-                if sig:
-                    post_webhook(sig)
-            log.info("✅ Escaneo completado. Esperando %ss...", LOOP_SECONDS)
+            symbol = SYMBOLS[index % len(SYMBOLS)]
+            log.info("🔍 Escaneando %s ...", symbol)
+            sig = evaluate_symbol(symbol)
+            if sig:
+                post_webhook(sig)
+            log.info("✅ Escaneo completado para %s. Esperando %ss...", symbol, LOOP_SECONDS)
+
+            # Avanzar al siguiente activo
+            index += 1
+
         except Exception as e:
             log.error("scan error: %s", e)
-        time.sleep(LOOP_SECONDS)
+
+        time.sleep(LOOP_SECONDS + uniform(0.5, 1.5))  # pequeña espera aleatoria
 
 def report_loop():
     log.info("report loop cada %sh", REPORT_EVERY_HOURS)
