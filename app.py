@@ -28,7 +28,7 @@ COINS = {
     "XRPUSDT": "ripple"
 }
 
-LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))
+LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "300"))
 REPORT_EVERY_HOURS = int(os.environ.get("REPORT_EVERY_HOURS", "4"))
 SMA_FAST = int(os.environ.get("SMA_FAST", "6"))
 SMA_SLOW = int(os.environ.get("SMA_SLOW", "70"))
