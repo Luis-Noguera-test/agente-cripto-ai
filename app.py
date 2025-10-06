@@ -555,9 +555,10 @@ def health():
 def start_threads():
     t1 = threading.Thread(target=scan_loop, daemon=True)
     t2 = threading.Thread(target=report_loop, daemon=True)
-    t1.start(); t2.start()
+    t1.start()
+    t2.start()
 
-# ---------- Inicio ----------
+# 🚀 Inicio
 if __name__ == "__main__":
     if SEND_TEST_ON_DEPLOY:
         post_webhook({
@@ -573,7 +574,10 @@ if __name__ == "__main__":
             "comentario": "Prueba de despliegue (Render)."
         })
 
+    # Iniciar los hilos del agente
     start_threads()
+
+    # Mantener el servidor Flask activo
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
     
