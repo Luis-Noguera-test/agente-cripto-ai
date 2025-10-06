@@ -219,8 +219,12 @@ def scan_loop():
     while True:
         try:
             for s in SYMBOLS:
+                print(f"[{nowiso()}] 🔍 Escaneando {s}...")
                 sig = evaluate_symbol(s)
-                if sig: post_webhook(sig)
+                if sig:
+                    print(f"📈 Señal detectada en {s}: {sig['tipo']}")
+                    post_webhook(sig)
+            print(f"[{nowiso()}] ✅ Escaneo completado. Esperando {LOOP_SECONDS}s...\n")
         except Exception as e:
             print("scan error:", e)
         time.sleep(LOOP_SECONDS)
