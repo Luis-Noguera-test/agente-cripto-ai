@@ -243,10 +243,45 @@ def start_threads():
 
 if __name__ == "__main__":
     if SEND_TEST_ON_DEPLOY:
-        post_webhook({"evento":"nueva_senal","tipo":"Largo","activo":"BTC/USD",
-                      "entrada":123100,"sl":119407,"tp":128024,"riesgo":3.0,
-                      "timeframe":"H1","timestamp":nowiso(),
-                      "comentario":"Prueba de despliegue (Render)."})
-    start_threads()
-    port = int(os.environ.get("PORT","10000"))
+        post_webhook({
+            "evento": "nueva_senal",
+            "tipo": "Largo",
+            "activo": "BTC/USD",
+            "entrada": 123100,
+            "sl": 119407,
+            "tp": 128024,
+            "riesgo": 3.0,
+            "timeframe": "H1",
+            "timestamp": nowiso(),
+            "comentario": "Prueba de despliegue (Render)."
+        })
+
+    import threading
+    import time
+    import os
+
+    # 🧠 Bucle principal del agente: escaneo continuo del mercado
+    def loop_agente():
+        while True:
+            try:
+                print("🔁 Escaneando mercado y generando informe...")
+
+                # Aquí llamamos a tus funciones ya existentes del agente
+                generar_informe()            # genera el informe de las 4 criptos base
+                detectar_senales()           # detecta oportunidades de entrada/salida
+
+                # Si detectar_senales() devuelve señales, las envía al webhook de Make
+                # Ejemplo dentro de esa función: post_webhook({...})
+
+            except Exception as e:
+                print("⚠️ Error en el loop del agente:", e)
+
+            # Esperar 300 segundos (5 minutos) antes del siguiente ciclo
+            time.sleep(300)
+
+    # 🧵 Lanzamos el bucle del agente en un hilo aparte para que no bloquee Flask
+    threading.Thread(target=loop_agente, daemon=True).start()
+
+    # 🌐 Mantener el servidor Flask vivo (Render requiere esto)
+    port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
