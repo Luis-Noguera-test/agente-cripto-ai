@@ -14,7 +14,7 @@ WEBHOOK_URL = os.environ.get(
 )
 
 SYMBOLS = os.environ.get("SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT").split(",")
-LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))          
+LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))
 REPORT_EVERY_HOURS = int(os.environ.get("REPORT_EVERY_HOURS", "4"))
 
 SEND_TEST_ON_DEPLOY = os.environ.get("SEND_TEST_ON_DEPLOY", "true").lower() == "true"
@@ -24,7 +24,6 @@ PERF_PATH   = "performance.json"
 CACHE_PATH  = "cache.json"
 PARAMS_PATH = "params.json"
 
-# Endpoints Binance alternativos
 BINANCE_ENDPOINTS = [
     "https://api.binance.com",
     "https://api.binance.us",
@@ -239,7 +238,6 @@ def evaluate_symbol(symbol):
 
     # LARGO
     if (s_fast > s_slow) and vol_ok and pull_ok:
-        # solo si no hay un largo abierto
         if not any(tr["open"] and tr["dir"]=="L" for tr in st["trades"]):
             entry=round(p,6); sl=round(entry*(1-params["SL_PCT"]),6); tp=round(entry*(1+params["TP_PCT"]),6)
             trade={"dir":"L","entry":entry,"sl":sl,"tp":tp,"open":True}
@@ -255,7 +253,6 @@ def evaluate_symbol(symbol):
 
     # CORTO
     if (s_fast < s_slow) and vol_ok and pull_ok:
-        # solo si no hay un corto abierto
         if not any(tr["open"] and tr["dir"]=="S" for tr in st["trades"]):
             entry=round(p,6); sl=round(entry*(1+params["SL_PCT"]),6); tp=round(entry*(1-params["TP_PCT"]),6)
             trade={"dir":"S","entry":entry,"sl":sl,"tp":tp,"open":True}
@@ -325,14 +322,36 @@ def scan_loop():
 def report_loop():
     print(f"🕓 report loop cada {REPORT_EVERY_HOURS}h")
     next_run=datetime.now()
+    last_state_log=None
+
     while True:
-        if datetime.now()>=next_run:
+        now=datetime.now()
+
+        # Informe programado
+        if now>=next_run:
             try:
                 post_webhook(report_payload())
                 print("📤 Informe 4h enviado.")
                 auto_tune()
             except Exception as e: print("report error:",e)
-            next_run=datetime.now()+timedelta(hours=REPORT_EVERY_HOURS)
+            next_run=now+timedelta(hours=REPORT_EVERY_HOURS)
+
+        # Heartbeat cada 5 minutos
+        if now.minute % 5 == 0 and (last_state_log is None or (now - last_state_log).seconds > 240):
+            print(f"💓 Heartbeat {nowiso()}")
+
+        # Log de operaciones abiertas cada hora
+        if now.minute == 0 and (last_state_log is None or now.hour != last_state_log.hour):
+            print("📊 Estado de operaciones abiertas:")
+            for sym, st in state.items():
+                if not st["trades"]:
+                    print(f" - {sym}: sin operaciones abiertas")
+                else:
+                    for tr in st["trades"]:
+                        status="abierta" if tr["open"] else "cerrada"
+                        print(f" - {sym} {tr['dir']} @ {tr['entry']} → {status} (SL {tr['sl']}, TP {tr['tp']})")
+            last_state_log=now
+
         time.sleep(15)
 
 # ========== Flask ==========
