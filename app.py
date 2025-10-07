@@ -1,9 +1,9 @@
-import os, time, threading, requests, json
+import os, time, threading, requests, math, json
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 import feedparser
-from random import uniform
 import functools
+from random import uniform
 
 # Forzar flush de logs en Render
 print = functools.partial(print, flush=True)
@@ -13,9 +13,8 @@ WEBHOOK_URL = "https://hook.eu2.make.com/rqycnm09n1dvatljeuyptxzsh2jhnx6t"
 
 # ⚙️ Configuración general
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))  # 1 activo/minuto
+LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))  # 1 llamada por minuto
 REPORT_EVERY_HOURS = int(os.environ.get("REPORT_EVERY_HOURS", "4"))
-
 SMA_FAST = int(os.environ.get("SMA_FAST", "6"))
 SMA_SLOW = int(os.environ.get("SMA_SLOW", "70"))
 ATR_LEN = int(os.environ.get("ATR_LEN", "14"))
@@ -30,18 +29,25 @@ STATE_PATH = "state.json"
 PERF_PATH = "performance.json"
 CACHE_PATH = "cache.json"
 
+# -------------------------------
+# API CoinGecko Demo
+# -------------------------------
 COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
 BASE_URL = "https://api.coingecko.com/api/v3"
 
-# 🪙 Mapeo símbolos -> CoinGecko ID
-COINS = {
-    "BTCUSDT": "bitcoin",
-    "ETHUSDT": "ethereum",
-    "SOLUSDT": "solana",
-    "XRPUSDT": "ripple"
-}
+def get_headers():
+    headers = {
+        "accept": "application/json",
+        "accept-encoding": "gzip, deflate",
+        "User-Agent": "crypto-agent-ai/1.0"
+    }
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+    return headers
 
-# ---------- Utilidades ----------
+# -------------------------------
+# Utilidades
+# -------------------------------
 def nowiso():
     return datetime.now().isoformat()
 
@@ -62,7 +68,9 @@ def safe_save_json(path, data):
     except Exception as e:
         print("save error", path, e)
 
-# ---------- Caché ----------
+# -------------------------------
+# Cache local
+# -------------------------------
 cache = safe_load_json(CACHE_PATH, {})
 
 def get_cached(key, max_age_min=5):
@@ -78,45 +86,32 @@ def set_cache(key, data):
     cache[key] = {"ts": nowiso(), "data": data}
     safe_save_json(CACHE_PATH, cache)
 
-# ---------- CoinGecko Pro ----------
-def get_headers():
-    """Cabeceras correctas para CoinGecko Pro API"""
-    headers = {
-        "accept": "application/json",
-        "accept-encoding": "deflate, gzip",
-        "User-Agent": "crypto-agent-ai/1.0"
-    }
-    if COINGECKO_API_KEY:
-        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
-    return headers
+# -------------------------------
+# Datos CoinGecko
+# -------------------------------
+COINS = {
+    "BTCUSDT": "bitcoin",
+    "ETHUSDT": "ethereum",
+    "SOLUSDT": "solana",
+    "XRPUSDT": "ripple"
+}
 
-def get_klines(symbol, days=1, interval="hourly"):
-    """OHLC sintético cacheado desde CoinGecko Pro"""
+def get_klines(symbol, days=7, interval="hourly"):
+    """Devuelve lista de precios desde CoinGecko (con autenticación demo y cache)."""
     key = f"klines_{symbol}"
     cached = get_cached(key)
     if cached:
         return cached
-
     try:
         coin_id = COINS[symbol]
         url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-        params = {"vs_currency": "usd", "days": 7, "interval": "hourly"}
-        time.sleep(uniform(0.2, 0.6))
-        r = requests.get(url, headers=get_headers(), params=params, timeout=15)
+        params = {"vs_currency": "usd", "days": days, "interval": interval}
+        r = requests.get(url, headers=get_headers(), params=params, timeout=20)
         r.raise_for_status()
         data = r.json().get("prices", [])
         kl = []
-        prev_close = None
-        for ts, close in data:
-            c = float(close)
-            if prev_close is None:
-                o = h = l = c
-            else:
-                o = prev_close
-                h = max(o, c)
-                l = min(o, c)
-            kl.append({"t": ts, "o": o, "h": h, "l": l, "c": c, "v": 1.0})
-            prev_close = c
+        for t, p in data:
+            kl.append({"t": t, "o": p, "h": p, "l": p, "c": p, "v": 1.0})
         set_cache(key, kl)
         return kl
     except Exception as e:
@@ -124,17 +119,15 @@ def get_klines(symbol, days=1, interval="hourly"):
         return get_cached(key) or []
 
 def price_24h(symbol):
-    """Datos 24h cacheados desde CoinGecko Pro"""
+    """Obtiene precio spot y rango 24h desde CoinGecko."""
     key = f"price_{symbol}"
     cached = get_cached(key)
     if cached:
         return cached
-
     try:
         coin_id = COINS[symbol]
         url = f"{BASE_URL}/coins/{coin_id}"
-        time.sleep(uniform(0.2, 0.6))
-        r = requests.get(url, headers=get_headers(), timeout=10)
+        r = requests.get(url, headers=get_headers(), timeout=15)
         r.raise_for_status()
         data = r.json()
         current = data["market_data"]["current_price"]["usd"]
@@ -148,7 +141,9 @@ def price_24h(symbol):
         print(f"⚠️ Error obteniendo price_24h({symbol}):", e)
         return get_cached(key) or (0, 0, 0, 0)
 
-# ---------- Indicadores ----------
+# -------------------------------
+# Indicadores técnicos
+# -------------------------------
 def sma(values, n):
     if len(values) < n: return None
     return sum(values[-n:]) / n
@@ -166,7 +161,9 @@ def avg(values, n):
     if len(values) < n: return None
     return sum(values[-n:]) / n
 
-# ---------- Noticias y sentimiento ----------
+# -------------------------------
+# Noticias y sentimiento
+# -------------------------------
 def coindesk_headlines(n=3):
     try:
         feed = feedparser.parse("https://www.coindesk.com/arc/outboundfeeds/rss/")
@@ -192,24 +189,31 @@ def fear_greed():
         return j["value"], j["value_classification"]
     except: return None, None
 
-# ---------- Webhook ----------
+# -------------------------------
+# Webhook
+# -------------------------------
 def post_webhook(payload):
     if not WEBHOOK_URL: return
     try:
         requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print("📤 webhook →", payload.get("evento"), payload.get("activo", ""))
+        print("📤 webhook enviado:", payload.get("evento"), payload.get("activo", ""))
     except Exception as e:
         print("webhook error:", e)
 
-# ---------- Estado ----------
+# -------------------------------
+# Estado y rendimiento
+# -------------------------------
 state = safe_load_json(STATE_PATH, {
     s: {"open": False, "dir": None, "entry": None, "sl": None, "tp": None}
     for s in SYMBOLS
 })
+performance = safe_load_json(PERF_PATH, {"trades": [], "wins": 0, "losses": 0})
 
-# ---------- Evaluación de señales ----------
+# -------------------------------
+# Evaluación de señales
+# -------------------------------
 def evaluate_symbol(symbol):
-    kl = get_klines(symbol, days=1, interval="hourly")
+    kl = get_klines(symbol, 7, "hourly")
     closes = [x["c"] for x in kl]
     vols = [x["v"] for x in kl]
     if not closes: return None
@@ -230,7 +234,6 @@ def evaluate_symbol(symbol):
         tp = round(entry * (1 + TP_PCT), 6)
         state[symbol] = {"open": True, "dir": "L", "entry": entry, "sl": sl, "tp": tp}
         safe_save_json(STATE_PATH, state)
-        print(f"📈 Señal LARGO {symbol} @ {entry}")
         return {"evento": "nueva_senal", "tipo": "Largo", "activo": sym_to_pair(symbol),
                 "entrada": entry, "sl": sl, "tp": tp, "riesgo": RISK_PCT,
                 "timeframe": "H1", "timestamp": nowiso(),
@@ -251,10 +254,12 @@ def evaluate_symbol(symbol):
                     "comentario": "SL alcanzado."}
     return None
 
-# ---------- Informe ----------
+# -------------------------------
+# Reporte 4h
+# -------------------------------
 def price_24h_line(symbol):
     c, low, high, pct = price_24h(symbol)
-    return f"{sym_to_pair(symbol)} {c:.2f} (24h {pct:+.2f}%) Rango {low:.2f}–{high:.2f}"
+    return f"{sym_to_pair(symbol)} {c:.2f} (24h {pct:+.2f}%) Rango 24h {low:.2f}–{high:.2f}"
 
 def report_payload():
     lines = [price_24h_line(s) for s in SYMBOLS]
@@ -266,11 +271,13 @@ def report_payload():
     headlines = coindesk_headlines(3) + theblock_headlines(2) + ft_headlines(2)
     return {"evento": "informe", "tipo": "miniresumen_4h", "timestamp": nowiso(),
             "precios": lines, "sentimiento": fg_text, "titulares": headlines[:5],
-            "comentario": "Informe 4h (CoinGecko Pro + RSS, cache 5m)."}
+            "comentario": "Informe 4h (CoinGecko + RSS, con cache y autenticación demo)."}
 
-# ---------- Bucles ----------
+# -------------------------------
+# Bucles
+# -------------------------------
 def scan_loop():
-    print("🌀 scan loop iniciado (1 activo/minuto, cache 5m)")
+    print("🌀 scan loop iniciado (1 símbolo por iteración)")
     index = 0
     while True:
         try:
@@ -278,12 +285,13 @@ def scan_loop():
             print(f"🔍 Escaneando {symbol} ...")
             sig = evaluate_symbol(symbol)
             if sig:
+                print(f"📈 Señal detectada en {symbol}: {sig['tipo']}")
                 post_webhook(sig)
-            print(f"✅ Escaneo completado para {symbol}. Esperando {LOOP_SECONDS}s...\n")
             index += 1
+            print(f"✅ Escaneo completado para {symbol}. Esperando {LOOP_SECONDS}s...\n")
         except Exception as e:
             print("⚠️ scan error:", e)
-        time.sleep(LOOP_SECONDS + uniform(0.5, 1.5))
+        time.sleep(LOOP_SECONDS + uniform(2.0, 4.0))
 
 def report_loop():
     print("🕓 report loop cada", REPORT_EVERY_HOURS, "h")
@@ -296,24 +304,38 @@ def report_loop():
             except Exception as e:
                 print("⚠️ report error:", e)
             next_run = datetime.now() + timedelta(hours=REPORT_EVERY_HOURS)
-        time.sleep(15)
+        time.sleep(20)
 
-# ---------- Flask ----------
+# -------------------------------
+# Flask
+# -------------------------------
 app = Flask(__name__)
 
 @app.get("/")
 def health():
-    return jsonify({"status": "ok", "time": nowiso(), "cache_keys": list(cache.keys())})
+    return jsonify({
+        "status": "ok",
+        "time": nowiso(),
+        "cache_keys": list(cache.keys()),
+        "params": {"SMA_FAST": SMA_FAST, "SMA_SLOW": SMA_SLOW,
+                   "ATR_LEN": ATR_LEN, "VOL_LEN": VOL_LEN,
+                   "PULLBACK_ATR": PULLBACK_ATR, "SL_PCT": SL_PCT, "TP_PCT": TP_PCT},
+        "api_key_loaded": bool(COINGECKO_API_KEY)
+    })
 
 def start_threads():
     t1 = threading.Thread(target=scan_loop, daemon=True)
     t2 = threading.Thread(target=report_loop, daemon=True)
     t1.start(); t2.start()
 
-# ---------- Inicio ----------
+# -------------------------------
+# Inicio
+# -------------------------------
 if __name__ == "__main__":
     print("🚀 Iniciando agente Cripto AI...")
-    print("🧩 API Key detectada:", bool(COINGECKO_API_KEY))
+    print("🔑 API Key cargada:", bool(COINGECKO_API_KEY))
+    print("🌐 Endpoint:", BASE_URL)
+
     if SEND_TEST_ON_DEPLOY:
         post_webhook({
             "evento": "nueva_senal",
@@ -325,8 +347,9 @@ if __name__ == "__main__":
             "riesgo": 3.0,
             "timeframe": "H1",
             "timestamp": nowiso(),
-            "comentario": "Prueba de despliegue (Render)."
+            "comentario": "Prueba de despliegue (Render con CoinGecko Demo API)."
         })
+
     start_threads()
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)
