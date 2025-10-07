@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from random import uniform
 from flask import Flask, jsonify
 
-# 🔧 Logs instantáneos (Render)
+# 🔧 Logs inmediatos (Render)
 print = functools.partial(print, flush=True)
 
 # 🔗 Webhook destino
@@ -11,13 +11,16 @@ WEBHOOK_URL = "https://hook.eu2.make.com/rqycnm09n1dvatljeuyptxzsh2jhnx6t"
 
 # ⚙️ Configuración general
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))  # 1 ciclo/minuto
+LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))
 REPORT_EVERY_HOURS = int(os.environ.get("REPORT_EVERY_HOURS", "4"))
 SMA_FAST, SMA_SLOW = 6, 70
 ATR_LEN, VOL_LEN = 14, 20
 PULLBACK_ATR, RISK_PCT = 0.25, 3.0
 TP_PCT, SL_PCT = 0.04, 0.03
 SEND_TEST_ON_DEPLOY = os.environ.get("SEND_TEST_ON_DEPLOY", "true").lower() == "true"
+
+# CoinGecko API Key (entorno o fija)
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "CG-bst7sAP3Zb7H6AcrThmHEP7N")
 
 STATE_PATH, PERF_PATH, CACHE_PATH = "state.json", "performance.json", "cache.json"
 
@@ -53,6 +56,13 @@ def set_cache(key, data):
 # 🪙 Fuente de datos CoinGecko
 COINS = {"BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana", "XRPUSDT": "ripple"}
 
+def get_headers():
+    """Devuelve cabeceras con API Key si existe"""
+    headers = {"accept": "application/json"}
+    if COINGECKO_API_KEY:
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+    return headers
+
 def get_klines(symbol, days=1, interval="hourly"):
     key = f"klines_{symbol}"
     cached = get_cached(key)
@@ -61,8 +71,8 @@ def get_klines(symbol, days=1, interval="hourly"):
         coin_id = COINS[symbol]
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
         params = {"vs_currency": "usd", "days": days, "interval": interval}
-        time.sleep(uniform(0.2, 0.6))
-        r = requests.get(url, params=params, timeout=15)
+        time.sleep(uniform(0.2, 0.5))
+        r = requests.get(url, params=params, headers=get_headers(), timeout=15)
         r.raise_for_status()
         data = r.json().get("prices", [])
         kl = [{"t": t, "o": p, "h": p, "l": p, "c": p, "v": 1.0} for t, p in data]
@@ -80,7 +90,7 @@ def price_24h(symbol):
         coin_id = COINS[symbol]
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
         time.sleep(uniform(0.2, 0.5))
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, headers=get_headers(), timeout=10)
         r.raise_for_status()
         d = r.json()["market_data"]
         val = (d["current_price"]["usd"], d["low_24h"]["usd"], d["high_24h"]["usd"], d["price_change_percentage_24h"])
@@ -100,18 +110,15 @@ def atr(kl, n):
                abs(kl[-i]["l"] - kl[-i-1]["c"])) for i in range(1, n+1)]
     return sum(trs) / n
 
-# 🗞️ Noticias
+# 🗞️ Noticias y sentimiento
 def coindesk_headlines(n=3):
-    try:
-        return [e.title for e in feedparser.parse("https://www.coindesk.com/arc/outboundfeeds/rss/").entries[:n]]
+    try: return [e.title for e in feedparser.parse("https://www.coindesk.com/arc/outboundfeeds/rss/").entries[:n]]
     except: return []
 def theblock_headlines(n=2):
-    try:
-        return [e.title for e in feedparser.parse("https://www.theblock.co/rss.xml").entries[:n]]
+    try: return [e.title for e in feedparser.parse("https://www.theblock.co/rss.xml").entries[:n]]
     except: return []
 def ft_headlines(n=2):
-    try:
-        return [e.title for e in feedparser.parse("https://www.ft.com/technology/cryptocurrencies?format=rss").entries[:n]]
+    try: return [e.title for e in feedparser.parse("https://www.ft.com/technology/cryptocurrencies?format=rss").entries[:n]]
     except: return []
 def fear_greed():
     try:
@@ -195,10 +202,10 @@ def scan_loop():
             i += 1
         except Exception as e:
             print("⚠️ scan error:", e)
-        time.sleep(LOOP_SECONDS)  # 1 ciclo por minuto
+        time.sleep(LOOP_SECONDS)
 
 def report_loop():
-    print(f"🕓 report loop cada {REPORT_EVERY_HOURS}h")
+    print(f"🕓 report loop cada {REPORT_EVERY_HOURS} h")
     next_run = datetime.now()
     while True:
         if datetime.now() >= next_run:
