@@ -36,6 +36,7 @@ COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
 BASE_URL = "https://api.coingecko.com/api/v3"
 
 def get_headers():
+    """Solo usado en endpoints que aceptan header (no market_chart)."""
     headers = {
         "accept": "application/json",
         "accept-encoding": "gzip, deflate",
@@ -97,7 +98,7 @@ COINS = {
 }
 
 def get_klines(symbol, days=7, interval="hourly"):
-    """Devuelve lista de precios desde CoinGecko (con autenticación demo y cache)."""
+    """Devuelve lista de precios desde CoinGecko (Demo API usa parámetro en query)."""
     key = f"klines_{symbol}"
     cached = get_cached(key)
     if cached:
@@ -105,13 +106,16 @@ def get_klines(symbol, days=7, interval="hourly"):
     try:
         coin_id = COINS[symbol]
         url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-        params = {"vs_currency": "usd", "days": days, "interval": interval}
-        r = requests.get(url, headers=get_headers(), params=params, timeout=20)
+        params = {
+            "vs_currency": "usd",
+            "days": days,
+            "interval": interval,
+            "x_cg_demo_api_key": COINGECKO_API_KEY  # <- Clave como parámetro
+        }
+        r = requests.get(url, headers={"accept": "application/json"}, params=params, timeout=20)
         r.raise_for_status()
         data = r.json().get("prices", [])
-        kl = []
-        for t, p in data:
-            kl.append({"t": t, "o": p, "h": p, "l": p, "c": p, "v": 1.0})
+        kl = [{"t": t, "o": p, "h": p, "l": p, "c": p, "v": 1.0} for t, p in data]
         set_cache(key, kl)
         return kl
     except Exception as e:
@@ -119,7 +123,7 @@ def get_klines(symbol, days=7, interval="hourly"):
         return get_cached(key) or []
 
 def price_24h(symbol):
-    """Obtiene precio spot y rango 24h desde CoinGecko."""
+    """Obtiene precio spot y rango 24h desde CoinGecko (acepta header)."""
     key = f"price_{symbol}"
     cached = get_cached(key)
     if cached:
@@ -317,10 +321,8 @@ def health():
         "status": "ok",
         "time": nowiso(),
         "cache_keys": list(cache.keys()),
-        "params": {"SMA_FAST": SMA_FAST, "SMA_SLOW": SMA_SLOW,
-                   "ATR_LEN": ATR_LEN, "VOL_LEN": VOL_LEN,
-                   "PULLBACK_ATR": PULLBACK_ATR, "SL_PCT": SL_PCT, "TP_PCT": TP_PCT},
-        "api_key_loaded": bool(COINGECKO_API_KEY)
+        "api_key_loaded": bool(COINGECKO_API_KEY),
+        "endpoint": BASE_URL
     })
 
 def start_threads():
