@@ -82,6 +82,7 @@ def get_headers():
     """Cabeceras correctas para CoinGecko Pro API"""
     headers = {
         "accept": "application/json",
+        "accept-encoding": "deflate, gzip",
         "User-Agent": "crypto-agent-ai/1.0"
     }
     if COINGECKO_API_KEY:
