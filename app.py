@@ -1,58 +1,45 @@
-import os, time, threading, requests, math, json
+import os, time, threading, requests, json, functools, math
 from datetime import datetime, timedelta
+from random import uniform
 from flask import Flask, jsonify
 import feedparser
-import functools
-from random import uniform
 
-# Forzar flush de logs en Render
+# Logs con flush inmediato (Render)
 print = functools.partial(print, flush=True)
 
-# 🔗 Webhook destino (Make)
-WEBHOOK_URL = "https://hook.eu2.make.com/rqycnm09n1dvatljeuyptxzsh2jhnx6t"
+# ========== Config ==========
+WEBHOOK_URL = os.environ.get(
+    "WEBHOOK_URL",
+    "https://hook.eu2.make.com/rqycnm09n1dvatljeuyptxzsh2jhnx6t"
+)
 
-# ⚙️ Configuración general
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))  # 1 llamada por minuto
+SYMBOLS = os.environ.get("SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT").split(",")
+LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))          # 1 símbolo/min
 REPORT_EVERY_HOURS = int(os.environ.get("REPORT_EVERY_HOURS", "4"))
+
+# Señales (sobre velas 1h)
 SMA_FAST = int(os.environ.get("SMA_FAST", "6"))
 SMA_SLOW = int(os.environ.get("SMA_SLOW", "70"))
-ATR_LEN = int(os.environ.get("ATR_LEN", "14"))
-VOL_LEN = int(os.environ.get("VOL_LEN", "20"))
+ATR_LEN  = int(os.environ.get("ATR_LEN",  "14"))
+VOL_LEN  = int(os.environ.get("VOL_LEN",  "20"))
 PULLBACK_ATR = float(os.environ.get("PULLBACK_ATR", "0.25"))
+SL_PCT   = float(os.environ.get("SL_PCT", "0.03"))
+TP_PCT   = float(os.environ.get("TP_PCT", "0.04"))
 RISK_PCT = float(os.environ.get("RISK_PCT", "3.0"))
-TP_PCT = float(os.environ.get("TP_PCT", "0.04"))
-SL_PCT = float(os.environ.get("SL_PCT", "0.03"))
+
 SEND_TEST_ON_DEPLOY = os.environ.get("SEND_TEST_ON_DEPLOY", "true").lower() == "true"
 
 STATE_PATH = "state.json"
-PERF_PATH = "performance.json"
+PERF_PATH  = "performance.json"
 CACHE_PATH = "cache.json"
 
-# -------------------------------
-# API CoinGecko Demo
-# -------------------------------
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
-BASE_URL = "https://api.coingecko.com/api/v3"
+BINANCE = "https://api.binance.com"
 
-def get_headers():
-    """Solo usado en endpoints que aceptan header (no market_chart)."""
-    headers = {
-        "accept": "application/json",
-        "accept-encoding": "gzip, deflate",
-        "User-Agent": "crypto-agent-ai/1.0"
-    }
-    if COINGECKO_API_KEY:
-        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
-    return headers
-
-# -------------------------------
-# Utilidades
-# -------------------------------
+# ========== Utilidades ==========
 def nowiso():
-    return datetime.now().isoformat()
+    return datetime.now().isoformat(timespec="seconds")
 
-def sym_to_pair(sym):
+def sym_to_pair(sym: str) -> str:
     return sym.replace("USDT", "") + "/USD"
 
 def safe_load_json(path, default):
@@ -69,85 +56,108 @@ def safe_save_json(path, data):
     except Exception as e:
         print("save error", path, e)
 
-# -------------------------------
-# Cache local
-# -------------------------------
-cache = safe_load_json(CACHE_PATH, {})
+# ========== Caché ligera ==========
+cache = safe_load_json(CACHE_PATH, {})  # { key: {ts, data} }
 
-def get_cached(key, max_age_min=5):
-    entry = cache.get(key)
-    if not entry:
+def get_cached(key, max_age_sec: int):
+    e = cache.get(key)
+    if not e:
         return None
-    ts = datetime.fromisoformat(entry["ts"])
-    if datetime.now() - ts > timedelta(minutes=max_age_min):
+    ts = datetime.fromisoformat(e["ts"])
+    if (datetime.now() - ts).total_seconds() > max_age_sec:
         return None
-    return entry["data"]
+    return e["data"]
 
 def set_cache(key, data):
     cache[key] = {"ts": nowiso(), "data": data}
     safe_save_json(CACHE_PATH, cache)
 
-# -------------------------------
-# Datos CoinGecko
-# -------------------------------
-COINS = {
-    "BTCUSDT": "bitcoin",
-    "ETHUSDT": "ethereum",
-    "SOLUSDT": "solana",
-    "XRPUSDT": "ripple"
-}
+# ========== Llamadas Binance (sin API key) ==========
+def http_get(url, params=None, timeout=12):
+    """GET con reintentos/backoff simple para 429/5xx."""
+    tries = 0
+    while True:
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            if r.status_code == 429:
+                wait = 2 + tries * 2
+                print(f"⚠️ 429 rate limit. Backoff {wait}s...")
+                time.sleep(wait)
+                tries += 1
+                continue
+            r.raise_for_status()
+            return r.json()
+        except requests.HTTPError as e:
+            # Si es 5xx, reintenta; si es 4xx (excepto 429) retorna None
+            code = getattr(e.response, "status_code", None)
+            if code and 500 <= code < 600 and tries < 3:
+                wait = 1 + tries * 2
+                print(f"⚠️ {code} server error. Retry {wait}s...")
+                time.sleep(wait)
+                tries += 1
+                continue
+            print("❌ HTTP error:", e)
+            return None
+        except Exception as e:
+            if tries < 2:
+                wait = 1 + tries
+                print(f"⚠️ network error: {e}. Retry {wait}s...")
+                time.sleep(wait)
+                tries += 1
+                continue
+            print("❌ network error:", e)
+            return None
 
-def get_klines(symbol, days=7, interval="hourly"):
-    """Devuelve lista de precios desde CoinGecko (Demo API usa parámetro en query)."""
-    key = f"klines_{symbol}"
-    cached = get_cached(key)
+def get_klines(symbol, interval="1h", limit=200):
+    """
+    Velas Binance: open, high, low, close, volume.
+    Retorna lista de dicts [{t,o,h,l,c,v}, ...]
+    """
+    key = f"k_{symbol}_{interval}_{limit}"
+    cached = get_cached(key, max_age_sec=55)  # casi 1 minuto
     if cached:
         return cached
-    try:
-        coin_id = COINS[symbol]
-        url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-        params = {
-            "vs_currency": "usd",
-            "days": days,
-            "interval": interval,
-            "x_cg_demo_api_key": COINGECKO_API_KEY  # <- Clave como parámetro
-        }
-        r = requests.get(url, headers={"accept": "application/json"}, params=params, timeout=20)
-        r.raise_for_status()
-        data = r.json().get("prices", [])
-        kl = [{"t": t, "o": p, "h": p, "l": p, "c": p, "v": 1.0} for t, p in data]
-        set_cache(key, kl)
-        return kl
-    except Exception as e:
-        print(f"⚠️ Error en get_klines({symbol}):", e)
-        return get_cached(key) or []
+
+    url = f"{BINANCE}/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    data = http_get(url, params=params)
+    if not data:
+        return get_cached(key, 999999) or []  # devuelve última buena
+
+    out = []
+    for k in data:
+        out.append({
+            "t": int(k[0]),  # open time ms
+            "o": float(k[1]),
+            "h": float(k[2]),
+            "l": float(k[3]),
+            "c": float(k[4]),
+            "v": float(k[5]),
+        })
+    set_cache(key, out)
+    return out
 
 def price_24h(symbol):
-    """Obtiene precio spot y rango 24h desde CoinGecko (acepta header)."""
-    key = f"price_{symbol}"
-    cached = get_cached(key)
+    """Precio spot y rango 24h (Binance)."""
+    key = f"p24_{symbol}"
+    cached = get_cached(key, max_age_sec=55)
     if cached:
         return cached
-    try:
-        coin_id = COINS[symbol]
-        url = f"{BASE_URL}/coins/{coin_id}"
-        r = requests.get(url, headers=get_headers(), timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        current = data["market_data"]["current_price"]["usd"]
-        low = data["market_data"]["low_24h"]["usd"]
-        high = data["market_data"]["high_24h"]["usd"]
-        pct = data["market_data"]["price_change_percentage_24h"]
-        val = (float(current), float(low), float(high), float(pct))
-        set_cache(key, val)
-        return val
-    except Exception as e:
-        print(f"⚠️ Error obteniendo price_24h({symbol}):", e)
-        return get_cached(key) or (0, 0, 0, 0)
 
-# -------------------------------
-# Indicadores técnicos
-# -------------------------------
+    url = f"{BINANCE}/api/v3/ticker/24hr"
+    data = http_get(url, params={"symbol": symbol})
+    if not data:
+        return get_cached(key, 999999) or (0, 0, 0, 0)
+
+    cur = float(data["lastPrice"])
+    low = float(data["lowPrice"])
+    high = float(data["highPrice"])
+    pct = float(data["priceChangePercent"])
+    val = (cur, low, high, pct)
+    set_cache(key, val)
+    return val
+
+# ========== Indicadores ==========
 def sma(values, n):
     if len(values) < n: return None
     return sum(values[-n:]) / n
@@ -165,9 +175,7 @@ def avg(values, n):
     if len(values) < n: return None
     return sum(values[-n:]) / n
 
-# -------------------------------
-# Noticias y sentimiento
-# -------------------------------
+# ========== Noticias & Sentimiento ==========
 def coindesk_headlines(n=3):
     try:
         feed = feedparser.parse("https://www.coindesk.com/arc/outboundfeeds/rss/")
@@ -193,126 +201,146 @@ def fear_greed():
         return j["value"], j["value_classification"]
     except: return None, None
 
-# -------------------------------
-# Webhook
-# -------------------------------
+# ========== Webhook ==========
 def post_webhook(payload):
-    if not WEBHOOK_URL: return
+    if not WEBHOOK_URL: 
+        return
     try:
         requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        print("📤 webhook enviado:", payload.get("evento"), payload.get("activo", ""))
+        print("📤 webhook →", payload.get("evento"), payload.get("activo", ""))
     except Exception as e:
         print("webhook error:", e)
 
-# -------------------------------
-# Estado y rendimiento
-# -------------------------------
+# ========== Estado & rendimiento ==========
 state = safe_load_json(STATE_PATH, {
     s: {"open": False, "dir": None, "entry": None, "sl": None, "tp": None}
     for s in SYMBOLS
 })
 performance = safe_load_json(PERF_PATH, {"trades": [], "wins": 0, "losses": 0})
 
-# -------------------------------
-# Evaluación de señales
-# -------------------------------
+def record_trade(sym, result):
+    performance["trades"].append({"sym": sym, "result": result, "ts": nowiso()})
+    if result == "TP": performance["wins"] += 1
+    if result == "SL": performance["losses"] += 1
+    performance["trades"] = performance["trades"][-100:]
+    safe_save_json(PERF_PATH, performance)
+
+# ========== Señales ==========
 def evaluate_symbol(symbol):
-    kl = get_klines(symbol, 7, "hourly")
+    kl = get_klines(symbol, "1h", 200)
+    if not kl:
+        return None
     closes = [x["c"] for x in kl]
-    vols = [x["v"] for x in kl]
-    if not closes: return None
+    vols   = [x["v"] for x in kl]
     p = closes[-1]
+
     s_fast = sma(closes, SMA_FAST)
     s_slow = sma(closes, SMA_SLOW)
-    _atr = atr(kl, ATR_LEN)
-    v_avg = avg(vols, VOL_LEN)
-    if any(x is None for x in [s_fast, s_slow, _atr, v_avg]): return None
+    _atr   = atr(kl, ATR_LEN)
+    v_avg  = avg(vols, VOL_LEN)
+    if any(x is None for x in [s_fast, s_slow, _atr, v_avg]): 
+        return None
+
     v_last = vols[-1]
     vol_ok = v_last >= 0.8 * v_avg
     pull_ok = abs(p - s_fast) <= _atr * PULLBACK_ATR
+
     st = state.setdefault(symbol, {"open": False, "dir": None, "entry": None, "sl": None, "tp": None})
 
-    if (s_fast > s_slow) and vol_ok and pull_ok and not st["open"]:
+    # Entrada LARGA
+    if (s_fast is not None and s_slow is not None and s_fast > s_slow) and vol_ok and pull_ok and not st["open"]:
         entry = round(p, 6)
         sl = round(entry * (1 - SL_PCT), 6)
         tp = round(entry * (1 + TP_PCT), 6)
         state[symbol] = {"open": True, "dir": "L", "entry": entry, "sl": sl, "tp": tp}
         safe_save_json(STATE_PATH, state)
-        return {"evento": "nueva_senal", "tipo": "Largo", "activo": sym_to_pair(symbol),
-                "entrada": entry, "sl": sl, "tp": tp, "riesgo": RISK_PCT,
-                "timeframe": "H1", "timestamp": nowiso(),
-                "comentario": "Cruce SMA6>SMA70 + pullback con volumen."}
+        return {
+            "evento": "nueva_senal",
+            "tipo": "Largo",
+            "activo": sym_to_pair(symbol),
+            "entrada": entry,
+            "sl": sl,
+            "tp": tp,
+            "riesgo": RISK_PCT,
+            "timeframe": "H1",
+            "timestamp": nowiso(),
+            "comentario": "Cruce SMA6>SMA70 + pullback (ATR) y volumen OK."
+        }
 
+    # Gestión
     if st["open"] and st["dir"] == "L":
         if p >= st["tp"]:
             state[symbol] = {"open": False, "dir": None, "entry": None, "sl": None, "tp": None}
             safe_save_json(STATE_PATH, state)
-            return {"evento": "cierre", "activo": sym_to_pair(symbol),
-                    "resultado": "TP", "precio_cierre": p, "timestamp": nowiso(),
-                    "comentario": "TP alcanzado."}
+            record_trade(symbol, "TP")
+            return {
+                "evento": "cierre", "activo": sym_to_pair(symbol),
+                "resultado": "TP", "precio_cierre": p, "timestamp": nowiso(),
+                "comentario": "TP alcanzado."
+            }
         if p <= st["sl"]:
             state[symbol] = {"open": False, "dir": None, "entry": None, "sl": None, "tp": None}
             safe_save_json(STATE_PATH, state)
-            return {"evento": "cierre", "activo": sym_to_pair(symbol),
-                    "resultado": "SL", "precio_cierre": p, "timestamp": nowiso(),
-                    "comentario": "SL alcanzado."}
+            record_trade(symbol, "SL")
+            return {
+                "evento": "cierre", "activo": sym_to_pair(symbol),
+                "resultado": "SL", "precio_cierre": p, "timestamp": nowiso(),
+                "comentario": "SL alcanzado."
+            }
     return None
 
-# -------------------------------
-# Reporte 4h
-# -------------------------------
+# ========== Informe ==========
 def price_24h_line(symbol):
     c, low, high, pct = price_24h(symbol)
-    return f"{sym_to_pair(symbol)} {c:.2f} (24h {pct:+.2f}%) Rango 24h {low:.2f}–{high:.2f}"
+    return f"{sym_to_pair(symbol)} {c:.2f} (24h {pct:+.2f}%)  Rango 24h {low:.2f}–{high:.2f}"
 
 def report_payload():
     lines = [price_24h_line(s) for s in SYMBOLS]
-    try:
-        fg = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()["data"][0]
-        fg_text = f"Fear&Greed: {fg['value']} ({fg['value_classification']})"
-    except:
-        fg_text = "Fear&Greed: s/d"
+    fg_v, fg_txt = fear_greed()
+    fg_line = f"Fear&Greed: {fg_v} ({fg_txt})" if fg_v else "Fear&Greed: s/d"
     headlines = coindesk_headlines(3) + theblock_headlines(2) + ft_headlines(2)
-    return {"evento": "informe", "tipo": "miniresumen_4h", "timestamp": nowiso(),
-            "precios": lines, "sentimiento": fg_text, "titulares": headlines[:5],
-            "comentario": "Informe 4h (CoinGecko + RSS, con cache y autenticación demo)."}
+    return {
+        "evento": "informe",
+        "tipo": "miniresumen_4h",
+        "timestamp": nowiso(),
+        "precios": lines,
+        "sentimiento": fg_line,
+        "titulares": headlines[:5],
+        "comentario": "Informe 4h (Binance + RSS)."
+    }
 
-# -------------------------------
-# Bucles
-# -------------------------------
+# ========== Bucles ==========
 def scan_loop():
-    print("🌀 scan loop iniciado (1 símbolo por iteración)")
-    index = 0
+    print(f"🌀 scan loop: {LOOP_SECONDS}s | rotación 1 símbolo/iteración")
+    idx = 0
     while True:
         try:
-            symbol = SYMBOLS[index % len(SYMBOLS)]
-            print(f"🔍 Escaneando {symbol} ...")
-            sig = evaluate_symbol(symbol)
+            sym = SYMBOLS[idx % len(SYMBOLS)]
+            print(f"🔍 Escaneando {sym} ...")
+            sig = evaluate_symbol(sym)
             if sig:
-                print(f"📈 Señal detectada en {symbol}: {sig['tipo']}")
+                print(f"📈 Señal detectada en {sym} → {sig['tipo']}")
                 post_webhook(sig)
-            index += 1
-            print(f"✅ Escaneo completado para {symbol}. Esperando {LOOP_SECONDS}s...\n")
+            print(f"✅ Escaneo completado para {sym}. Esperando {LOOP_SECONDS}s...\n")
+            idx += 1
         except Exception as e:
-            print("⚠️ scan error:", e)
-        time.sleep(LOOP_SECONDS + uniform(2.0, 4.0))
+            print("scan error:", e)
+        time.sleep(LOOP_SECONDS + uniform(0.5, 1.5))
 
 def report_loop():
-    print("🕓 report loop cada", REPORT_EVERY_HOURS, "h")
+    print(f"🕓 report loop cada {REPORT_EVERY_HOURS}h")
     next_run = datetime.now()
     while True:
         if datetime.now() >= next_run:
             try:
                 post_webhook(report_payload())
-                print("📤 Informe 4h enviado correctamente.")
+                print("📤 Informe 4h enviado.")
             except Exception as e:
-                print("⚠️ report error:", e)
+                print("report error:", e)
             next_run = datetime.now() + timedelta(hours=REPORT_EVERY_HOURS)
-        time.sleep(20)
+        time.sleep(15)
 
-# -------------------------------
-# Flask
-# -------------------------------
+# ========== Flask ==========
 app = Flask(__name__)
 
 @app.get("/")
@@ -320,9 +348,14 @@ def health():
     return jsonify({
         "status": "ok",
         "time": nowiso(),
-        "cache_keys": list(cache.keys()),
-        "api_key_loaded": bool(COINGECKO_API_KEY),
-        "endpoint": BASE_URL
+        "symbols": SYMBOLS,
+        "params": {
+            "SMA_FAST": SMA_FAST, "SMA_SLOW": SMA_SLOW, "ATR_LEN": ATR_LEN,
+            "VOL_LEN": VOL_LEN, "PULLBACK_ATR": PULLBACK_ATR,
+            "SL_PCT": SL_PCT, "TP_PCT": TP_PCT
+        },
+        "open_state": state,
+        "perf": {"wins": performance["wins"], "losses": performance["losses"], "n": len(performance["trades"])}
     })
 
 def start_threads():
@@ -330,14 +363,9 @@ def start_threads():
     t2 = threading.Thread(target=report_loop, daemon=True)
     t1.start(); t2.start()
 
-# -------------------------------
-# Inicio
-# -------------------------------
+# ========== Main ==========
 if __name__ == "__main__":
-    print("🚀 Iniciando agente Cripto AI...")
-    print("🔑 API Key cargada:", bool(COINGECKO_API_KEY))
-    print("🌐 Endpoint:", BASE_URL)
-
+    print("🚀 Iniciando agente Cripto AI (Binance, sin API key)...")
     if SEND_TEST_ON_DEPLOY:
         post_webhook({
             "evento": "nueva_senal",
@@ -346,10 +374,10 @@ if __name__ == "__main__":
             "entrada": 123100,
             "sl": 119407,
             "tp": 128024,
-            "riesgo": 3.0,
+            "riesgo": RISK_PCT,
             "timeframe": "H1",
             "timestamp": nowiso(),
-            "comentario": "Prueba de despliegue (Render con CoinGecko Demo API)."
+            "comentario": "Prueba de despliegue (Render)."
         })
 
     start_threads()
