@@ -323,6 +323,7 @@ def report_loop():
     print(f"🕓 report loop cada {REPORT_EVERY_HOURS}h")
     next_run=datetime.now()
     last_state_log=None
+    last_heartbeat = None
 
     while True:
         now=datetime.now()
@@ -337,8 +338,9 @@ def report_loop():
             next_run=now+timedelta(hours=REPORT_EVERY_HOURS)
 
         # Heartbeat cada 5 minutos
-        if now.minute % 5 == 0 and (last_state_log is None or (now - last_state_log).seconds > 240):
-            print(f"💓 Heartbeat {nowiso()}")
+        if now.minute % 5 == 0 and (last_heartbeat is None or last_heartbeat != now.minute):
+        print(f"💓 Heartbeat {nowiso()}")
+        last_heartbeat = now.minute
 
         # Log de operaciones abiertas cada hora
         if now.minute == 0 and (last_state_log is None or now.hour != last_state_log.hour):
