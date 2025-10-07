@@ -238,18 +238,36 @@ def evaluate_symbol(symbol):
     st=state.setdefault(symbol,{"trades":[]}); new_signals=[]
 
     # LARGO
-    if (s_fast>s_slow) and vol_ok and pull_ok:
-        entry=round(p,6); sl=round(entry*(1-params["SL_PCT"]),6); tp=round(entry*(1+params["TP_PCT"]),6)
-        trade={"dir":"L","entry":entry,"sl":sl,"tp":tp,"open":True}
-        st["trades"].append(trade); safe_save_json(STATE_PATH,state)
-        new_signals.append({"evento":"nueva_senal","tipo":"Largo","activo":sym_to_pair(symbol),"entrada":entry,"sl":sl,"tp":tp,"riesgo":params["RISK_PCT"],"timeframe":"H1","timestamp":nowiso(),"comentario":"Cruce SMAfast>SMA slow + pullback + volumen OK."})
+    if (s_fast > s_slow) and vol_ok and pull_ok:
+        # solo si no hay un largo abierto
+        if not any(tr["open"] and tr["dir"]=="L" for tr in st["trades"]):
+            entry=round(p,6); sl=round(entry*(1-params["SL_PCT"]),6); tp=round(entry*(1+params["TP_PCT"]),6)
+            trade={"dir":"L","entry":entry,"sl":sl,"tp":tp,"open":True}
+            st["trades"].append(trade); safe_save_json(STATE_PATH,state)
+            new_signals.append({
+                "evento":"nueva_senal","tipo":"Largo",
+                "activo":sym_to_pair(symbol),
+                "entrada":entry,"sl":sl,"tp":tp,
+                "riesgo":params["RISK_PCT"],
+                "timeframe":"H1","timestamp":nowiso(),
+                "comentario":"Cruce SMAfast>SMA slow + pullback + volumen OK."
+            })
 
     # CORTO
-    if (s_fast<s_slow) and vol_ok and pull_ok:
-        entry=round(p,6); sl=round(entry*(1+params["SL_PCT"]),6); tp=round(entry*(1-params["TP_PCT"]),6)
-        trade={"dir":"S","entry":entry,"sl":sl,"tp":tp,"open":True}
-        st["trades"].append(trade); safe_save_json(STATE_PATH,state)
-        new_signals.append({"evento":"nueva_senal","tipo":"Corto","activo":sym_to_pair(symbol),"entrada":entry,"sl":sl,"tp":tp,"riesgo":params["RISK_PCT"],"timeframe":"H1","timestamp":nowiso(),"comentario":"Cruce SMAfast<SMA slow + pullback + volumen OK."})
+    if (s_fast < s_slow) and vol_ok and pull_ok:
+        # solo si no hay un corto abierto
+        if not any(tr["open"] and tr["dir"]=="S" for tr in st["trades"]):
+            entry=round(p,6); sl=round(entry*(1+params["SL_PCT"]),6); tp=round(entry*(1-params["TP_PCT"]),6)
+            trade={"dir":"S","entry":entry,"sl":sl,"tp":tp,"open":True}
+            st["trades"].append(trade); safe_save_json(STATE_PATH,state)
+            new_signals.append({
+                "evento":"nueva_senal","tipo":"Corto",
+                "activo":sym_to_pair(symbol),
+                "entrada":entry,"sl":sl,"tp":tp,
+                "riesgo":params["RISK_PCT"],
+                "timeframe":"H1","timestamp":nowiso(),
+                "comentario":"Cruce SMAfast<SMA slow + pullback + volumen OK."
+            })
 
     # Gestión de abiertos
     still_open=[]
