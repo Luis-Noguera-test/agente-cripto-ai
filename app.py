@@ -98,7 +98,7 @@ def get_klines(symbol, days=1, interval="hourly"):
     try:
         coin_id = COINS[symbol]
         url = f"https://pro-api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-        params = {"vs_currency": "usd", "days": days, "interval": interval}
+        params = {"vs_currency": "usd", "days": 7, "interval": "hourly"}
         time.sleep(uniform(0.2, 0.6))
         r = requests.get(url, headers=get_headers(), params=params, timeout=15)
         r.raise_for_status()
