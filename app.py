@@ -30,7 +30,8 @@ STATE_PATH = "state.json"
 PERF_PATH = "performance.json"
 CACHE_PATH = "cache.json"
 
-COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY")
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
+BASE_URL = "https://api.coingecko.com/api/v3"
 
 # 🪙 Mapeo símbolos -> CoinGecko ID
 COINS = {
@@ -98,7 +99,7 @@ def get_klines(symbol, days=1, interval="hourly"):
 
     try:
         coin_id = COINS[symbol]
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        url = f"{BASE_URL}/coins/{coin_id}/market_chart"
         params = {"vs_currency": "usd", "days": 7, "interval": "hourly"}
         time.sleep(uniform(0.2, 0.6))
         r = requests.get(url, headers=get_headers(), params=params, timeout=15)
@@ -131,7 +132,7 @@ def price_24h(symbol):
 
     try:
         coin_id = COINS[symbol]
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+        url = f"{BASE_URL}/coins/{coin_id}"
         time.sleep(uniform(0.2, 0.6))
         r = requests.get(url, headers=get_headers(), timeout=10)
         r.raise_for_status()
