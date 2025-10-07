@@ -33,7 +33,14 @@ STATE_PATH = "state.json"
 PERF_PATH  = "performance.json"
 CACHE_PATH = "cache.json"
 
-BINANCE = "https://api.binance.com"
+# Endpoints Binance alternativos
+BINANCE_ENDPOINTS = [
+    "https://api.binance.com",   # global
+    "https://api.binance.us",    # USA
+    "https://api.binance.me"     # fallback
+]
+BINANCE = BINANCE_ENDPOINTS[0]
+HEADERS = {"User-Agent": "Mozilla/5.0 (CriptoAI Bot)"}
 
 # ========== Utilidades ==========
 def nowiso():
@@ -57,7 +64,7 @@ def safe_save_json(path, data):
         print("save error", path, e)
 
 # ========== Caché ligera ==========
-cache = safe_load_json(CACHE_PATH, {})  # { key: {ts, data} }
+cache = safe_load_json(CACHE_PATH, {})
 
 def get_cached(key, max_age_sec: int):
     e = cache.get(key)
@@ -74,21 +81,32 @@ def set_cache(key, data):
 
 # ========== Llamadas Binance (sin API key) ==========
 def http_get(url, params=None, timeout=12):
-    """GET con reintentos/backoff simple para 429/5xx."""
+    """GET con reintentos/backoff simple para 429/5xx y fallback de endpoint."""
+    global BINANCE
     tries = 0
+    endpoint_idx = 0
     while True:
         try:
-            r = requests.get(url, params=params, timeout=timeout)
+            r = requests.get(url, params=params, headers=HEADERS, timeout=timeout)
             if r.status_code == 429:
                 wait = 2 + tries * 2
                 print(f"⚠️ 429 rate limit. Backoff {wait}s...")
                 time.sleep(wait)
                 tries += 1
                 continue
+            if r.status_code == 451:
+                if endpoint_idx + 1 < len(BINANCE_ENDPOINTS):
+                    endpoint_idx += 1
+                    BINANCE = BINANCE_ENDPOINTS[endpoint_idx]
+                    print(f"⚠️ 451 bloqueado. Cambiando a {BINANCE}")
+                    url = url.replace(BINANCE_ENDPOINTS[endpoint_idx - 1], BINANCE)
+                    continue
+                else:
+                    print("❌ 451 bloqueado en todos los endpoints.")
+                    return None
             r.raise_for_status()
             return r.json()
         except requests.HTTPError as e:
-            # Si es 5xx, reintenta; si es 4xx (excepto 429) retorna None
             code = getattr(e.response, "status_code", None)
             if code and 500 <= code < 600 and tries < 3:
                 wait = 1 + tries * 2
@@ -109,25 +127,19 @@ def http_get(url, params=None, timeout=12):
             return None
 
 def get_klines(symbol, interval="1h", limit=200):
-    """
-    Velas Binance: open, high, low, close, volume.
-    Retorna lista de dicts [{t,o,h,l,c,v}, ...]
-    """
     key = f"k_{symbol}_{interval}_{limit}"
-    cached = get_cached(key, max_age_sec=55)  # casi 1 minuto
+    cached = get_cached(key, max_age_sec=55)
     if cached:
         return cached
-
     url = f"{BINANCE}/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     data = http_get(url, params=params)
     if not data:
-        return get_cached(key, 999999) or []  # devuelve última buena
-
+        return get_cached(key, 999999) or []
     out = []
     for k in data:
         out.append({
-            "t": int(k[0]),  # open time ms
+            "t": int(k[0]),
             "o": float(k[1]),
             "h": float(k[2]),
             "l": float(k[3]),
@@ -138,17 +150,14 @@ def get_klines(symbol, interval="1h", limit=200):
     return out
 
 def price_24h(symbol):
-    """Precio spot y rango 24h (Binance)."""
     key = f"p24_{symbol}"
     cached = get_cached(key, max_age_sec=55)
     if cached:
         return cached
-
     url = f"{BINANCE}/api/v3/ticker/24hr"
     data = http_get(url, params={"symbol": symbol})
     if not data:
         return get_cached(key, 999999) or (0, 0, 0, 0)
-
     cur = float(data["lastPrice"])
     low = float(data["lowPrice"])
     high = float(data["highPrice"])
