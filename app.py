@@ -57,10 +57,10 @@ def set_cache(key, data):
 COINS = {"BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana", "XRPUSDT": "ripple"}
 
 def get_headers():
-    """Devuelve cabeceras con API Key si existe"""
+    """Cabeceras correctas para CoinGecko Pro API (incluye plan gratuito)"""
     headers = {"accept": "application/json"}
     if COINGECKO_API_KEY:
-        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
+        headers["x-cg-pro-api-key"] = COINGECKO_API_KEY
     return headers
 
 def get_klines(symbol, days=1, interval="hourly"):
