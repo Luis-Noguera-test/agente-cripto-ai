@@ -86,7 +86,7 @@ def get_headers():
         "User-Agent": "crypto-agent-ai/1.0"
     }
     if COINGECKO_API_KEY:
-        headers["x-cg-pro-api-key"] = COINGECKO_API_KEY
+        headers["x-cg-demo-api-key"] = COINGECKO_API_KEY
     return headers
 
 def get_klines(symbol, days=1, interval="hourly"):
@@ -98,7 +98,7 @@ def get_klines(symbol, days=1, interval="hourly"):
 
     try:
         coin_id = COINS[symbol]
-        url = f"https://pro-api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        url = f"https://demo-api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
         params = {"vs_currency": "usd", "days": 7, "interval": "hourly"}
         time.sleep(uniform(0.2, 0.6))
         r = requests.get(url, headers=get_headers(), params=params, timeout=15)
@@ -131,7 +131,7 @@ def price_24h(symbol):
 
     try:
         coin_id = COINS[symbol]
-        url = f"https://pro-api.coingecko.com/api/v3/coins/{coin_id}"
+        url = f"https://demo-api.coingecko.com/api/v3/coins/{coin_id}"
         time.sleep(uniform(0.2, 0.6))
         r = requests.get(url, headers=get_headers(), timeout=10)
         r.raise_for_status()
