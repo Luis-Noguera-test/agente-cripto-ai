@@ -43,7 +43,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (CriptoAI Bot)"}
 
 # ========== Utilidades ==========
 def nowiso():
-    return datetime.now().isoformat(timespec="seconds")
+    # Ajusta a hora de España (UTC+2)
+    return (datetime.utcnow() + timedelta(hours=2)).isoformat(timespec="seconds")
 
 def now_local():
     # Devuelve ahora en hora local de Madrid si es posible
