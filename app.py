@@ -92,7 +92,8 @@ def get_cached(key, max_age_sec: int):
     if not e:
         return None
     ts = datetime.fromisoformat(e["ts"])
-    if (datetime.now() - ts).total_seconds() > max_age_sec:
+    now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
+    if (now - ts).total_seconds() > max_age_sec:
         return None
     return e["data"]
 
