@@ -110,7 +110,7 @@ params = safe_load_json(PARAMS_PATH, {
     "VOL_LEN": 20,
     "PULLBACK_ATR": 0.25,
     "SL_PCT": 0.03,
-    "TP_PCT": 0.04,
+    "TP_PCT": 0.06,
     "RISK_PCT": 3.0
 })
 
