@@ -240,38 +240,87 @@ def fear_greed():
     except: return None, None
 
 # ==========================
-#  BACKUP Y RESTORE
+#  BACKUP Y RESTORE COMPLETOS (STATE + PERFORMANCE)
 # ==========================
-def backup_state():
+
+def backup_all():
+    """
+    Envía copias de seguridad de state.json y performance.json al webhook de Make.
+    Compatible con Google Sheets vía Apps Script.
+    """
     try:
-        if os.path.exists(STATE_PATH):
-            with open(STATE_PATH, "r", encoding="utf-8") as f:
+        files_to_backup = [STATE_PATH, PERF_PATH]
+        for path in files_to_backup:
+            if not os.path.exists(path):
+                print(f"⚠️ No existe {path}, se omite backup.")
+                continue
+
+            with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
+
             payload = {
                 "tipo": "backup",
-                "file_name": "state.json",
+                "file_name": os.path.basename(path),
                 "contenido": content,
                 "timestamp": nowiso()
             }
+
             requests.post(BACKUP_WEBHOOK_URL, json=payload, timeout=10)
-            print("💾 Backup enviado correctamente a Make (state.json)")
+            print(f"💾 Backup enviado correctamente a Make ({path})")
+
     except Exception as e:
         print(f"❌ Error al enviar backup: {e}")
 
+
 def restore_last_backup():
+    """
+    Recupera los últimos backups remotos (state.json y performance.json, si existen).
+    Espera respuesta del Apps Script en formato:
+    {
+      "archivos": [
+        {"file_name": "state.json", "contenido": "{...}"},
+        {"file_name": "performance.json", "contenido": "{...}"}
+      ]
+    }
+    """
     try:
         print("🔄 Intentando recuperar último backup remoto...")
         r = requests.get(BACKUP_RESTORE_URL, timeout=15)
         if r.status_code != 200:
+            print(f"⚠️ Respuesta HTTP inesperada: {r.status_code}")
             return False
+
         data = r.json()
-        contenido = data.get("contenido")
-        if not contenido:
+        archivos = data.get("archivos") or []
+
+        if not archivos:
+            # Compatibilidad con formato antiguo {"contenido": "..."}
+            contenido = data.get("contenido")
+            if contenido:
+                with open(STATE_PATH, "w", encoding="utf-8") as f:
+                    f.write(contenido)
+                print("✅ Backup antiguo restaurado (solo state.json).")
+                return True
+            print("⚠️ No se encontraron archivos en el backup remoto.")
             return False
-        with open(STATE_PATH, "w", encoding="utf-8") as f:
-            f.write(contenido)
-        print("✅ Backup restaurado correctamente desde Google Sheets.")
+
+        restored_any = False
+        for item in archivos:
+            nombre = item.get("file_name")
+            contenido = item.get("contenido")
+            if not (nombre and contenido):
+                continue
+            with open(nombre, "w", encoding="utf-8") as f:
+                f.write(contenido)
+            print(f"✅ Backup restaurado correctamente → {nombre}")
+            restored_any = True
+
+        if not restored_any:
+            print("⚠️ Ningún archivo restaurado del backup remoto.")
+            return False
+
         return True
+
     except Exception as e:
         print(f"❌ Error al restaurar backup: {e}")
         return False
@@ -534,7 +583,7 @@ def report_loop():
 
             # Backup
             if hhmm == BACKUP_TIME_LOCAL and last_backup_min != hhmm:
-                backup_state()
+                backup_all()
                 last_backup_min = hhmm
 
         except Exception as e:
