@@ -489,7 +489,7 @@ def report_payload_market():
         "timestamp": nowiso(),
         "precios": lines,
         "sentimiento": fg_line,
-        "titulares": headlines[:5],
+        "titulares": (headlines or [])[:5],
         "comentario": comentario
     }
 
@@ -498,24 +498,25 @@ def report_payload_open_positions():
     today_signals = {"abiertas": [], "cerradas": []}
     today_date = now_local().date()
 
+    # Nota: performance guarda solo cerradas (TP/SL). Se deja la lógica por si en el futuro se añaden "abiertas" a performance.
     for t in performance.get("trades", []):
         ts = datetime.fromisoformat(t["ts"]).date() if "ts" in t else None
         if ts == today_date:
-            if t["result"] in ("TP", "SL"):
+            if t.get("result") in ("TP", "SL"):
                 today_signals["cerradas"].append(f"{t['sym']} {t['result']}")
             else:
                 today_signals["abiertas"].append(t["sym"])
 
     wins_today = sum(1 for t in performance.get("trades", [])
-                     if "ts" in t and datetime.fromisoformat(t["ts"]).date() == today_date and t["result"] == "TP")
+                     if "ts" in t and datetime.fromisoformat(t["ts"]).date() == today_date and t.get("result") == "TP")
     losses_today = sum(1 for t in performance.get("trades", [])
-                       if "ts" in t and datetime.fromisoformat(t["ts"]).date() == today_date and t["result"] == "SL")
+                       if "ts" in t and datetime.fromisoformat(t["ts"]).date() == today_date and t.get("result") == "SL")
     total_today = wins_today + losses_today
     rent_today = ((wins_today - losses_today) / total_today * 100) if total_today > 0 else 0
 
     for sym, st in state.items():
         for tr in st["trades"]:
-            if tr["open"]:
+            if tr.get("open"):
                 open_lines.append(f"{sym_to_pair(sym)} {tr['dir']} @ {tr['entry']} (SL {tr['sl']}, TP {tr['tp']})")
     if not open_lines:
         open_lines = ["Sin operaciones abiertas actualmente."]
@@ -534,6 +535,32 @@ def report_payload_open_positions():
         "titulares": [],
         "comentario": comentario
     }
+
+# ==========================
+#  ENVÍO A MAKE (helper con reintentos y logging)
+# ==========================
+def send_to_make(payload, desc=""):
+    """
+    Envía un payload al webhook de Make con:
+    - reintentos exponenciales (hasta 2 reintentos),
+    - logs claros de éxito / error,
+    - truncado de respuesta para evitar logs enormes.
+    """
+    max_tries = 3
+    for i in range(1, max_tries + 1):
+        try:
+            r = requests.post(WEBHOOK_URL, json=payload, timeout=12)
+            if 200 <= r.status_code < 300:
+                tag = desc or f"{payload.get('evento','?')} {payload.get('tipo', payload.get('resultado',''))}"
+                print(f"📤 Enviado a Make ({tag}) ✓")
+                return True
+            else:
+                body = (r.text or "")[:160].replace("\n", " ")
+                print(f"⚠️ HTTP {r.status_code} enviando a Make: {body} [intento {i}/{max_tries}]")
+        except Exception as e:
+            print(f"❌ Error enviando a Make ({desc or payload.get('evento','?')}): {e} [intento {i}/{max_tries}]")
+        time.sleep(1.5 * i)  # backoff sencillo
+    return False
 
 # ==========================
 #  BUCLES PRINCIPALES
@@ -564,21 +591,23 @@ def report_loop():
                         print(f" - {sym}: sin operaciones abiertas")
                     else:
                         for tr in st["trades"]:
-                            status = "abierta" if tr["open"] else "cerrada"
+                            status = "abierta" if tr.get("open") else "cerrada"
                             print(f" - {sym} {tr['dir']} @ {tr['entry']} → {status} (SL {tr['sl']}, TP {tr['tp']})")
                 last_state_log = now_loc
 
             # Informes mercado
             if hhmm in REPORT_TIMES_LOCAL and last_report_min != hhmm:
-                requests.post(WEBHOOK_URL, json=report_payload_market(), timeout=10)
-                print(f"📤 Informe 12h enviado ({hhmm} local).")
+                payload = report_payload_market()
+                send_to_make(payload, desc=f"informe {hhmm}")
+                print(f"📤 Informe 12h procesado ({hhmm} local).")
                 auto_tune()
                 last_report_min = hhmm
 
             # Informe posiciones abiertas
             if hhmm == OPEN_REPORT_LOCAL and last_open_min != hhmm:
-                requests.post(WEBHOOK_URL, json=report_payload_open_positions(), timeout=10)
-                print(f"📤 Informe de posiciones abiertas enviado ({hhmm} local).")
+                payload = report_payload_open_positions()
+                send_to_make(payload, desc="resumen posiciones")
+                print(f"📤 Informe de posiciones abiertas procesado ({hhmm} local).")
                 last_open_min = hhmm
 
             # Backup
@@ -600,8 +629,9 @@ def scan_loop():
             payloads = evaluate_symbol(sym)
             if payloads:
                 for pld in payloads:
-                    print(f"📈 Evento {pld['evento']} → {pld.get('tipo', pld.get('resultado',''))} {pld.get('activo','')}")
-                    requests.post(WEBHOOK_URL, json=pld, timeout=10)
+                    tag = f"{pld['evento']} → {pld.get('tipo', pld.get('resultado',''))} {pld.get('activo','')}"
+                    print(f"📈 {tag}")
+                    send_to_make(pld, desc=tag)
             print(f"✅ Escaneo completado para {sym}. Esperando {LOOP_SECONDS}s...\n")
             idx += 1
         except Exception as e:
