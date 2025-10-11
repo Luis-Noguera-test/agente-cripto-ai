@@ -249,16 +249,16 @@ def fear_greed():
     except: return None, None
 
 # ==========================
-#  BACKUP Y RESTORE COMPLETOS (STATE + PERFORMANCE)
+#  BACKUP Y RESTORE COMPLETOS (STATE + PERFORMANCE + PARAMS)
 # ==========================
 
 def backup_all():
     """
-    Envía copias de seguridad de state.json y performance.json al webhook de Make.
+    Envía copias de seguridad de state.json, performance.json y params.json al webhook de Make.
     Compatible con Google Sheets vía Apps Script.
     """
     try:
-        files_to_backup = [STATE_PATH, PERF_PATH]
+        files_to_backup = [STATE_PATH, PERF_PATH, PARAMS_PATH]
         for path in files_to_backup:
             if not os.path.exists(path):
                 print(f"⚠️ No existe {path}, se omite backup.")
@@ -274,21 +274,28 @@ def backup_all():
                 "timestamp": nowiso()
             }
 
-            requests.post(BACKUP_WEBHOOK_URL, json=payload, timeout=10)
-            print(f"💾 Backup enviado correctamente a Make ({path})")
+            try:
+                r = requests.post(BACKUP_WEBHOOK_URL, json=payload, timeout=10)
+                if 200 <= r.status_code < 300:
+                    print(f"💾 Backup enviado correctamente a Make ({path})")
+                else:
+                    print(f"⚠️ Error HTTP {r.status_code} enviando backup de {path}: {r.text[:150]}")
+            except Exception as e:
+                print(f"❌ Error enviando backup de {path}: {e}")
 
     except Exception as e:
-        print(f"❌ Error al enviar backup: {e}")
+        print(f"❌ Error al ejecutar backup_all(): {e}")
 
 
 def restore_last_backup():
     """
-    Recupera los últimos backups remotos (state.json y performance.json, si existen).
+    Recupera los últimos backups remotos (state.json, performance.json y params.json si existen).
     Espera respuesta del Apps Script en formato:
     {
       "archivos": [
         {"file_name": "state.json", "contenido": "{...}"},
-        {"file_name": "performance.json", "contenido": "{...}"}
+        {"file_name": "performance.json", "contenido": "{...}"},
+        {"file_name": "params.json", "contenido": "{...}"}
       ]
     }
     """
