@@ -381,8 +381,24 @@ def evaluate_symbol(symbol):
     new_payloads = []
 
     # ===== Anti-duplicado: comprobamos si ya se envió señal similar en últimas 24h =====
-    recent_trades = [t for t in performance.get("trades", [])
-                     if "ts" in t and datetime.fromisoformat(t["ts"]) > datetime.utcnow() - timedelta(hours=24)]
+    from datetime import timezone
+
+    recent_trades = []
+    for t in performance.get("trades", []):
+        ts_str = t.get("ts")
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_str)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            if ts > now_utc - timedelta(hours=24):
+                recent_trades.append(t)
+        except Exception as e:
+            print("⚠️ Error parseando timestamp trade:", e)
+            continue
+
     recent_symbols = {(t["sym"], t["dir"]) for t in recent_trades}
 
     # ===== Entradas =====
@@ -428,9 +444,8 @@ def evaluate_symbol(symbol):
                     "comentario": "Cruce SMAfast<SMA slow + pullback (ATR) y volumen OK."
                 })
 
-       # ===== Gestión intrabar (TP / SL) =====
+    # ===== Gestión intrabar (TP / SL) =====
     if st["trades"]:
-        # Obtener el precio actual en tiempo real
         cur = price_now(symbol)
         if cur is not None and cur > 0:
             still_open = []
@@ -498,11 +513,9 @@ def evaluate_symbol(symbol):
                             "comentario": f"Take-profit alcanzado (Corto). Entrada {entry}, SL {sl}, TP {tp}"
                         })
 
-                # Mantiene abiertas las no cerradas
                 if tr.get("open"):
                     still_open.append(tr)
 
-            # Actualizar estado y guardar
             st["trades"] = still_open
             safe_save_json(STATE_PATH, state)
         else:
