@@ -361,7 +361,9 @@ def evaluate_symbol(symbol):
     """Evalúa señales y gestiona cierres con control de duplicados y entradas múltiples."""
     kl = get_klines(symbol, "1h", 200)
     if not kl:
+        print(f"⚠️ {symbol}: sin datos de velas, se omite.")
         return None
+
     closes = [x["c"] for x in kl]
     vols = [x["v"] for x in kl]
     p = closes[-1]
@@ -370,19 +372,24 @@ def evaluate_symbol(symbol):
     s_slow = sma(closes, params["SMA_SLOW"])
     _atr = atr(kl, params["ATR_LEN"])
     v_avg = avg(vols, params["VOL_LEN"])
+
     if any(x is None for x in [s_fast, s_slow, _atr, v_avg]):
+        print(f"⚠️ {symbol}: datos insuficientes para cálculo SMA/ATR.")
         return None
 
     v_last = vols[-1]
     vol_ok = v_last >= 0.8 * v_avg
     pull_ok = abs(p - s_fast) <= _atr * params["PULLBACK_ATR"]
 
+    print(f"🔎 {symbol}: price={p:.2f}, s_fast={s_fast:.2f}, s_slow={s_slow:.2f}, "
+          f"ATR={_atr:.4f}, v_last={v_last:.2f}, v_avg={v_avg:.2f}, "
+          f"pull_ok={pull_ok}, vol_ok={vol_ok}")
+
     st = state.setdefault(symbol, {"trades": []})
     new_payloads = []
 
     # ===== Anti-duplicado: comprobamos si ya se envió señal similar en últimas 24h =====
     from datetime import timezone
-
     recent_trades = []
     for t in performance.get("trades", []):
         ts_str = t.get("ts")
@@ -405,10 +412,10 @@ def evaluate_symbol(symbol):
     if vol_ok and pull_ok:
         # LARGO
         if s_fast > s_slow:
-            # Permitimos varias operaciones por dirección si la entrada difiere al menos 1%
             active_longs = [tr for tr in st["trades"] if tr["open"] and tr["dir"] == "L"]
             same_entry = any(abs(tr["entry"] - p) / p < 0.01 for tr in active_longs)
             if not same_entry and (symbol, "L") not in recent_symbols:
+                print(f"🟢 Señal LARGA detectada → {symbol} @ {p}")
                 entry = round(p, 4)
                 sl = round(entry * (1 - params["SL_PCT"]), 4)
                 tp = round(entry * (1 + params["TP_PCT"]), 4)
@@ -429,6 +436,7 @@ def evaluate_symbol(symbol):
             active_shorts = [tr for tr in st["trades"] if tr["open"] and tr["dir"] == "S"]
             same_entry = any(abs(tr["entry"] - p) / p < 0.01 for tr in active_shorts)
             if not same_entry and (symbol, "S") not in recent_symbols:
+                print(f"🔴 Señal CORTA detectada → {symbol} @ {p}")
                 entry = round(p, 4)
                 sl = round(entry * (1 + params["SL_PCT"]), 4)
                 tp = round(entry * (1 - params["TP_PCT"]), 4)
@@ -443,6 +451,9 @@ def evaluate_symbol(symbol):
                     "timestamp": nowiso(),
                     "comentario": "Cruce SMAfast<SMA slow + pullback (ATR) y volumen OK."
                 })
+    else:
+        print(f"⏸ {symbol}: condiciones no cumplidas → pull_ok={pull_ok}, vol_ok={vol_ok}, "
+              f"s_fast={s_fast:.2f}, s_slow={s_slow:.2f}")
 
     # ===== Gestión intrabar (TP / SL) =====
     if st["trades"]:
@@ -459,56 +470,45 @@ def evaluate_symbol(symbol):
                 entry = float(tr["entry"])
                 sym_pair = sym_to_pair(symbol)
 
-                # === LARGO ===
                 if dir_ == "L":
                     if cur <= sl:
-                        print(f"💀 SL tocado (intra-vela) {sym_pair} → cerrando L @ {cur}")
+                        print(f"💀 SL tocado {sym_pair} → cerrando L @ {cur}")
                         tr["open"] = False
                         record_trade(symbol, "SL", "L")
                         new_payloads.append({
-                            "evento": "cierre",
-                            "activo": sym_pair,
-                            "resultado": "SL",
-                            "precio_cierre": cur,
+                            "evento": "cierre", "activo": sym_pair,
+                            "resultado": "SL", "precio_cierre": cur,
                             "timestamp": nowiso(),
                             "comentario": f"Stop-loss alcanzado (Largo). Entrada {entry}, SL {sl}, TP {tp}"
                         })
                     elif cur >= tp:
-                        print(f"🎯 TP tocado (intra-vela) {sym_pair} → cerrando L @ {cur}")
+                        print(f"🎯 TP tocado {sym_pair} → cerrando L @ {cur}")
                         tr["open"] = False
                         record_trade(symbol, "TP", "L")
                         new_payloads.append({
-                            "evento": "cierre",
-                            "activo": sym_pair,
-                            "resultado": "TP",
-                            "precio_cierre": cur,
+                            "evento": "cierre", "activo": sym_pair,
+                            "resultado": "TP", "precio_cierre": cur,
                             "timestamp": nowiso(),
                             "comentario": f"Take-profit alcanzado (Largo). Entrada {entry}, SL {sl}, TP {tp}"
                         })
-
-                # === CORTO ===
                 elif dir_ == "S":
                     if cur >= sl:
-                        print(f"💀 SL tocado (intra-vela) {sym_pair} → cerrando S @ {cur}")
+                        print(f"💀 SL tocado {sym_pair} → cerrando S @ {cur}")
                         tr["open"] = False
                         record_trade(symbol, "SL", "S")
                         new_payloads.append({
-                            "evento": "cierre",
-                            "activo": sym_pair,
-                            "resultado": "SL",
-                            "precio_cierre": cur,
+                            "evento": "cierre", "activo": sym_pair,
+                            "resultado": "SL", "precio_cierre": cur,
                             "timestamp": nowiso(),
                             "comentario": f"Stop-loss alcanzado (Corto). Entrada {entry}, SL {sl}, TP {tp}"
                         })
                     elif cur <= tp:
-                        print(f"🎯 TP tocado (intra-vela) {sym_pair} → cerrando S @ {cur}")
+                        print(f"🎯 TP tocado {sym_pair} → cerrando S @ {cur}")
                         tr["open"] = False
                         record_trade(symbol, "TP", "S")
                         new_payloads.append({
-                            "evento": "cierre",
-                            "activo": sym_pair,
-                            "resultado": "TP",
-                            "precio_cierre": cur,
+                            "evento": "cierre", "activo": sym_pair,
+                            "resultado": "TP", "precio_cierre": cur,
                             "timestamp": nowiso(),
                             "comentario": f"Take-profit alcanzado (Corto). Entrada {entry}, SL {sl}, TP {tp}"
                         })
