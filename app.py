@@ -208,6 +208,15 @@ def price_24h(symbol):
     val = (cur, low, high, pct); set_cache(key, val)
     return val
 
+def last_price(symbol):
+    """Obtiene el último precio actual (ticker en tiempo real) desde Binance."""
+    try:
+        data = http_get(f"{BINANCE_API}/ticker/price", params={"symbol": symbol})
+        return float(data["price"])
+    except Exception as e:
+        print(f"⚠️ Error obteniendo precio en vivo de {symbol}: {e}")
+        return None
+
 # ==========================
 #  INDICADORES
 # ==========================
@@ -412,48 +421,85 @@ def evaluate_symbol(symbol):
                     "comentario": "Cruce SMAfast<SMA slow + pullback (ATR) y volumen OK."
                 })
 
-    # ===== Gestión intrabar (TP / SL) =====
+       # ===== Gestión intrabar (TP / SL) =====
     if st["trades"]:
+        # Obtener el precio actual en tiempo real
         cur = price_now(symbol)
-        if cur is not None:
+        if cur is not None and cur > 0:
             still_open = []
             for tr in st["trades"]:
-                if not tr["open"]:
+                if not tr.get("open"):
                     continue
-                if tr["dir"] == "L":
-                    if cur <= tr["sl"]:
-                        tr["open"] = False; record_trade(symbol, "SL", "L")
+
+                dir_ = tr["dir"]
+                sl = float(tr["sl"])
+                tp = float(tr["tp"])
+                entry = float(tr["entry"])
+                sym_pair = sym_to_pair(symbol)
+
+                # === LARGO ===
+                if dir_ == "L":
+                    if cur <= sl:
+                        print(f"💀 SL tocado (intra-vela) {sym_pair} → cerrando L @ {cur}")
+                        tr["open"] = False
+                        record_trade(symbol, "SL", "L")
                         new_payloads.append({
-                            "evento": "cierre", "activo": sym_to_pair(symbol),
-                            "resultado": "SL", "precio_cierre": cur,
-                            "timestamp": nowiso(), "comentario": "SL alcanzado (Largo)."
+                            "evento": "cierre",
+                            "activo": sym_pair,
+                            "resultado": "SL",
+                            "precio_cierre": cur,
+                            "timestamp": nowiso(),
+                            "comentario": f"Stop-loss alcanzado (Largo). Entrada {entry}, SL {sl}, TP {tp}"
                         })
-                    elif cur >= tr["tp"]:
-                        tr["open"] = False; record_trade(symbol, "TP", "L")
+                    elif cur >= tp:
+                        print(f"🎯 TP tocado (intra-vela) {sym_pair} → cerrando L @ {cur}")
+                        tr["open"] = False
+                        record_trade(symbol, "TP", "L")
                         new_payloads.append({
-                            "evento": "cierre", "activo": sym_to_pair(symbol),
-                            "resultado": "TP", "precio_cierre": cur,
-                            "timestamp": nowiso(), "comentario": "TP alcanzado (Largo)."
+                            "evento": "cierre",
+                            "activo": sym_pair,
+                            "resultado": "TP",
+                            "precio_cierre": cur,
+                            "timestamp": nowiso(),
+                            "comentario": f"Take-profit alcanzado (Largo). Entrada {entry}, SL {sl}, TP {tp}"
                         })
-                elif tr["dir"] == "S":
-                    if cur >= tr["sl"]:
-                        tr["open"] = False; record_trade(symbol, "SL", "S")
+
+                # === CORTO ===
+                elif dir_ == "S":
+                    if cur >= sl:
+                        print(f"💀 SL tocado (intra-vela) {sym_pair} → cerrando S @ {cur}")
+                        tr["open"] = False
+                        record_trade(symbol, "SL", "S")
                         new_payloads.append({
-                            "evento": "cierre", "activo": sym_to_pair(symbol),
-                            "resultado": "SL", "precio_cierre": cur,
-                            "timestamp": nowiso(), "comentario": "SL alcanzado (Corto)."
+                            "evento": "cierre",
+                            "activo": sym_pair,
+                            "resultado": "SL",
+                            "precio_cierre": cur,
+                            "timestamp": nowiso(),
+                            "comentario": f"Stop-loss alcanzado (Corto). Entrada {entry}, SL {sl}, TP {tp}"
                         })
-                    elif cur <= tr["tp"]:
-                        tr["open"] = False; record_trade(symbol, "TP", "S")
+                    elif cur <= tp:
+                        print(f"🎯 TP tocado (intra-vela) {sym_pair} → cerrando S @ {cur}")
+                        tr["open"] = False
+                        record_trade(symbol, "TP", "S")
                         new_payloads.append({
-                            "evento": "cierre", "activo": sym_to_pair(symbol),
-                            "resultado": "TP", "precio_cierre": cur,
-                            "timestamp": nowiso(), "comentario": "TP alcanzado (Corto)."
+                            "evento": "cierre",
+                            "activo": sym_pair,
+                            "resultado": "TP",
+                            "precio_cierre": cur,
+                            "timestamp": nowiso(),
+                            "comentario": f"Take-profit alcanzado (Corto). Entrada {entry}, SL {sl}, TP {tp}"
                         })
-                if tr["open"]:
+
+                # Mantiene abiertas las no cerradas
+                if tr.get("open"):
                     still_open.append(tr)
+
+            # Actualizar estado y guardar
             st["trades"] = still_open
             safe_save_json(STATE_PATH, state)
+        else:
+            print(f"⚠️ Precio actual no disponible para {symbol}, se omite gestión intrabar.")
 
     return new_payloads if new_payloads else None
 
@@ -566,10 +612,9 @@ def send_to_make(payload, desc=""):
 #  BUCLES PRINCIPALES
 # ==========================
 def report_loop():
-    print("🕓 report loop activo → 09:00 & 21:00 (mercado), 22:00 (posiciones), 22:05 (backup) hora España")
+    print("🕓 report loop activo → 09:00 & 21:00 (mercado), 22:00 (posiciones) hora España")
     last_report_min = None
     last_open_min = None
-    last_backup_min = None
     last_state_log = None
     last_heartbeat_min = None
 
@@ -610,10 +655,10 @@ def report_loop():
                 print(f"📤 Informe de posiciones abiertas procesado ({hhmm} local).")
                 last_open_min = hhmm
 
-            # Backup
-            if hhmm == BACKUP_TIME_LOCAL and last_backup_min != hhmm:
-                backup_all()
-                last_backup_min = hhmm
+            # 🚫 Backup automático desactivado (manual vía endpoint)
+            # if hhmm == BACKUP_TIME_LOCAL and last_backup_min != hhmm:
+            #     backup_all()
+            #     last_backup_min = hhmm
 
         except Exception as e:
             print("report error:", e)
@@ -655,6 +700,15 @@ def health():
 def start_threads():
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=report_loop, daemon=True).start()
+
+@app.post("/force-backup")
+def force_backup():
+    """Permite forzar el backup manualmente desde PowerShell o navegador."""
+    try:
+        backup_all()
+        return jsonify({"ok": True, "msg": "Backup ejecutado correctamente"}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
     print("🚀 Iniciando agente Cripto AI con métricas, backup y autoaprendizaje…")
