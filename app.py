@@ -105,11 +105,11 @@ def set_cache(key, data):
 #  PARÁMETROS (con autoajuste)
 # ==========================
 params = safe_load_json(PARAMS_PATH, {
-    "SMA_FAST": 6,
-    "SMA_SLOW": 70,
+    "SMA_FAST": 10,
+    "SMA_SLOW": 60,
     "ATR_LEN": 14,
-    "VOL_LEN": 20,
-    "PULLBACK_ATR": 0.25,  # proximidad a SMA_fast medida en ATRs
+    "VOL_LEN": 24,
+    "PULLBACK_ATR": 0.15,  # proximidad a SMA_fast medida en ATRs
     "SL_PCT": 0.03,
     "TP_PCT": 0.06,        # 6% por defecto
     "RISK_PCT": 3.0
@@ -378,7 +378,7 @@ def evaluate_symbol(symbol):
         return None
 
     v_last = vols[-1]
-    vol_ok = v_last >= 0.8 * v_avg
+    vol_ok = v_last >= 1 * v_avg
     pull_ok = abs(p - s_fast) <= _atr * params["PULLBACK_ATR"]
 
     print(f"🔎 {symbol}: price={p:.2f}, s_fast={s_fast:.2f}, s_slow={s_slow:.2f}, "
