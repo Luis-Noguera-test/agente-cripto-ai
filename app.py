@@ -755,3 +755,19 @@ if __name__ == "__main__":
 
     # Servidor Flask
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
+    
+@app.post("/restore-state")
+def restore_state():
+    try:
+        data = requests.get(os.environ.get("BACKUP_RESTORE_URL"), timeout=10).json()
+        archivos = data.get("archivos", [])
+        for item in archivos:
+            if item.get("file_name") == "state.json":
+                with open("state.json", "w", encoding="utf-8") as f:
+                    f.write(item["contenido"])
+                print("✅ state.json restaurado manualmente desde Google Sheets")
+                return jsonify({"ok": True, "msg": "state.json restaurado"}), 200
+        return jsonify({"ok": False, "msg": "state.json no encontrado"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
