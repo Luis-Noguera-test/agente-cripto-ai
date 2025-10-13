@@ -15,34 +15,43 @@ except Exception:
 
 print = functools.partial(print, flush=True)
 
+# Webhook Make (señales/informes) -> Telegram
 WEBHOOK_URL = os.environ.get(
     "WEBHOOK_URL",
     "https://hook.eu2.make.com/rqycnm09n1dvatljeuyptxzsh2jhnx6t"
 )
 
-BACKUP_WEBHOOK_URL = os.environ.get(
-    "BACKUP_WEBHOOK_URL",
-    "https://hook.eu2.make.com/sjqu4jif4zkmamqyd30eycr19i57wbvb"
+# Apps Script de Google (POST para guardar backups en Sheets)
+BACKUP_POST_URL = os.environ.get(
+    "BACKUP_POST_URL",
+    "https://script.google.com/macros/s/AKfycbytxQTl2_s-LCwhYcGPdjZAL7_0ZILz4eRgcKH4y6ZDVA8foYDmL0AagndW2nHAOA8s/exec"
 )
 
+# Apps Script de Google (GET para restaurar backups desde Sheets)
 BACKUP_RESTORE_URL = os.environ.get(
     "BACKUP_RESTORE_URL",
     "https://script.google.com/macros/s/AKfycbytxQTl2_s-LCwhYcGPdjZAL7_0ZILz4eRgcKH4y6ZDVA8foYDmL0AagndW2nHAOA8s/exec"
 )
 
-SYMBOLS = os.environ.get("SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT").split(",")
+# Activos (actualizado): BTC, ETH, SOL, AVAX, BNB
+SYMBOLS = os.environ.get("SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,AVAXUSDT,BNBUSDT").split(",")
+
+# Frecuencia de escaneo (segundos)
 LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))
 SEND_TEST_ON_DEPLOY = os.environ.get("SEND_TEST_ON_DEPLOY", "true").lower() == "true"
 
+# Informes y backups (hora local España)
 REPORT_TIMES_LOCAL = {"09:00", "21:00"}
-OPEN_REPORT_LOCAL = "22:00"
-BACKUP_TIME_LOCAL = "22:05"
+BACKUP_TIMES_LOCAL = {"09:05", "21:05"}
+OPEN_REPORT_LOCAL = "22:00"  # opcional, se mantiene por compatibilidad
 
+# Rutas de archivos locales
 STATE_PATH  = "state.json"
 PERF_PATH   = "performance.json"
 CACHE_PATH  = "cache.json"
 PARAMS_PATH = "params.json"
 
+# Endpoints Binance
 BINANCE_ENDPOINTS = [
     "https://api.binance.com",
     "https://api.binance.us",
@@ -58,6 +67,7 @@ def nowiso():
     """Hora local de España (ajusta DST automáticamente)."""
     if MADRID_TZ:
         return datetime.now(MADRID_TZ).isoformat(timespec="seconds")
+    # Fallback aproximado
     return (datetime.utcnow() + timedelta(hours=2)).isoformat(timespec="seconds")
 
 def now_local():
@@ -91,11 +101,15 @@ def get_cached(key, max_age_sec: int):
     e = cache.get(key)
     if not e:
         return None
-    ts = datetime.fromisoformat(e["ts"])
-    now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
-    if (now - ts).total_seconds() > max_age_sec:
+    ts = e.get("ts")
+    try:
+        ts_dt = datetime.fromisoformat(ts)
+    except Exception:
         return None
-    return e["data"]
+    now = datetime.now(ts_dt.tzinfo) if ts_dt.tzinfo else datetime.now()
+    if (now - ts_dt).total_seconds() > max_age_sec:
+        return None
+    return e.get("data")
 
 def set_cache(key, data):
     cache[key] = {"ts": nowiso(), "data": data}
@@ -104,35 +118,42 @@ def set_cache(key, data):
 # ==========================
 #  PARÁMETROS (con autoajuste)
 # ==========================
+# Defaults (H1, filtros y ATR-stops)
 params = safe_load_json(PARAMS_PATH, {
     "SMA_FAST": 10,
     "SMA_SLOW": 60,
     "ATR_LEN": 14,
     "VOL_LEN": 24,
-    "PULLBACK_ATR": 0.15,  # proximidad a SMA_fast medida en ATRs
-    "SL_PCT": 0.03,
-    "TP_PCT": 0.06,        # 6% por defecto
-    "RISK_PCT": 3.0
+    "PULLBACK_ATR": 0.15,   # proximidad a SMA_fast medida en ATRs
+    "SL_PCT": 0.03,         # compatibilidad si no se usan ATR-stops
+    "TP_PCT": 0.06,         # compatibilidad si no se usan ATR-stops
+    "RISK_PCT": 1.0,
+    "USE_ATR_STOPS": True,
+    "SL_ATR_MULT": 1.5,
+    "TP_ATR_MULT": 3.0,
+    "MIN_VOL_RATIO": 1.0,   # v_last >= MIN_VOL_RATIO * v_avg
+    # Estructura preparada para params por símbolo (no activada aún)
+    "PARAMS_BY_SYMBOL": {}
 })
 
 def auto_tune():
-    """Ajuste simple según winrate de los últimos 30 trades."""
+    """Ajuste simple según winrate de los últimos 30 trades (global)."""
     trades = performance.get("trades", [])
     if len(trades) < 30:
         return
     recent = trades[-30:]
-    wins = sum(1 for t in recent if t["result"] == "TP")
-    losses = sum(1 for t in recent if t["result"] == "SL")
+    wins = sum(1 for t in recent if t.get("result") == "TP")
+    losses = sum(1 for t in recent if t.get("result") == "SL")
     total = wins + losses
     if total == 0:
         return
     winrate = wins / total
     print(f"🤖 Auto-tuning: últimos {total} trades, winrate={winrate:.2%}")
     if winrate < 0.45:
-        params["PULLBACK_ATR"] = max(params["PULLBACK_ATR"] * 0.9, 0.1)
-        params["VOL_LEN"] = min(params["VOL_LEN"] + 2, 50)
+        params["PULLBACK_ATR"] = max(params["PULLBACK_ATR"] * 0.9, 0.10)
+        params["VOL_LEN"] = min(params["VOL_LEN"] + 2, 60)
     elif winrate > 0.65:
-        params["RISK_PCT"] = min(params["RISK_PCT"] * 1.05, 5.0)
+        params["RISK_PCT"] = min(params["RISK_PCT"] * 1.05, 3.0)
     safe_save_json(PARAMS_PATH, params)
 
 # ==========================
@@ -187,6 +208,7 @@ def get_klines(symbol, interval="1h", limit=200):
     return out
 
 def price_now(symbol):
+    """Último precio actual de Binance (ticker)."""
     url = f"{BINANCE}/api/v3/ticker/price"
     d = http_get(url, {"symbol": symbol})
     try:
@@ -207,15 +229,6 @@ def price_24h(symbol):
     high = float(data["highPrice"]); pct = float(data["priceChangePercent"])
     val = (cur, low, high, pct); set_cache(key, val)
     return val
-
-def last_price(symbol):
-    """Obtiene el último precio actual (ticker en tiempo real) desde Binance."""
-    try:
-        data = http_get(f"{BINANCE_API}/ticker/price", params={"symbol": symbol})
-        return float(data["price"])
-    except Exception as e:
-        print(f"⚠️ Error obteniendo precio en vivo de {symbol}: {e}")
-        return None
 
 # ==========================
 #  INDICADORES
@@ -251,11 +264,12 @@ def fear_greed():
 # ==========================
 #  BACKUP Y RESTORE COMPLETOS (STATE + PERFORMANCE + PARAMS)
 # ==========================
-
 def backup_all():
     """
-    Envía copias de seguridad de state.json, performance.json y params.json al webhook de Make.
-    Compatible con Google Sheets vía Apps Script.
+    Envía copias de seguridad (state.json, performance.json, params.json)
+    directamente al Apps Script de Google Sheets (BACKUP_POST_URL).
+    Espera que el Apps Script implemente doPost y reciba JSON con:
+    { "timestamp", "file_name", "contenido" } por cada archivo.
     """
     try:
         files_to_backup = [STATE_PATH, PERF_PATH, PARAMS_PATH]
@@ -263,52 +277,38 @@ def backup_all():
             if not os.path.exists(path):
                 print(f"⚠️ No existe {path}, se omite backup.")
                 continue
-
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
-
             payload = {
-                "tipo": "backup",
+                "timestamp": nowiso(),
                 "file_name": os.path.basename(path),
-                "contenido": content,
-                "timestamp": nowiso()
+                "contenido": content
             }
-
             try:
-                r = requests.post(BACKUP_WEBHOOK_URL, json=payload, timeout=10)
+                r = requests.post(BACKUP_POST_URL, json=payload, timeout=15)
                 if 200 <= r.status_code < 300:
-                    print(f"💾 Backup enviado correctamente a Make ({path})")
+                    print(f"💾 Backup enviado a Sheets ({path}) ✓")
                 else:
-                    print(f"⚠️ Error HTTP {r.status_code} enviando backup de {path}: {r.text[:150]}")
+                    print(f"⚠️ Error HTTP {r.status_code} enviando backup de {path}: {r.text[:160]}")
             except Exception as e:
                 print(f"❌ Error enviando backup de {path}: {e}")
-
     except Exception as e:
         print(f"❌ Error al ejecutar backup_all(): {e}")
 
-
 def restore_last_backup():
     """
-    Recupera los últimos backups remotos (state.json, performance.json y params.json si existen).
-    Espera respuesta del Apps Script en formato:
-    {
-      "archivos": [
-        {"file_name": "state.json", "contenido": "{...}"},
-        {"file_name": "performance.json", "contenido": "{...}"},
-        {"file_name": "params.json", "contenido": "{...}"}
-      ]
-    }
+    Recupera últimos backups remotos (state.json, performance.json y params.json) desde Apps Script (GET).
+    Formato esperado (JSON):
+    { "archivos": [ {"file_name": "...", "contenido": "..."}, ... ] }
     """
     try:
         print("🔄 Intentando recuperar último backup remoto...")
-        r = requests.get(BACKUP_RESTORE_URL, timeout=15)
+        r = requests.get(BACKUP_RESTORE_URL, timeout=20)
         if r.status_code != 200:
             print(f"⚠️ Respuesta HTTP inesperada: {r.status_code}")
             return False
-
         data = r.json()
         archivos = data.get("archivos") or []
-
         if not archivos:
             # Compatibilidad con formato antiguo {"contenido": "..."}
             contenido = data.get("contenido")
@@ -319,7 +319,6 @@ def restore_last_backup():
                 return True
             print("⚠️ No se encontraron archivos en el backup remoto.")
             return False
-
         restored_any = False
         for item in archivos:
             nombre = item.get("file_name")
@@ -328,15 +327,12 @@ def restore_last_backup():
                 continue
             with open(nombre, "w", encoding="utf-8") as f:
                 f.write(contenido)
-            print(f"✅ Backup restaurado correctamente → {nombre}")
+            print(f"✅ Backup restaurado → {nombre}")
             restored_any = True
-
         if not restored_any:
             print("⚠️ Ningún archivo restaurado del backup remoto.")
             return False
-
         return True
-
     except Exception as e:
         print(f"❌ Error al restaurar backup: {e}")
         return False
@@ -351,19 +347,17 @@ def record_trade(sym, result, direction):
     performance["trades"].append({"sym": sym, "result": result, "dir": direction, "ts": nowiso()})
     if result == "TP": performance["wins"] += 1
     if result == "SL": performance["losses"] += 1
-    performance["trades"] = performance["trades"][-200:]
+    performance["trades"] = performance["trades"][-300:]  # guarda últimos 300
     safe_save_json(PERF_PATH, performance)
 
 # ==========================
 #  LÓGICA DE SEÑALES
 # ==========================
 def evaluate_symbol(symbol):
-    """Evalúa señales y gestiona cierres con control de duplicados y entradas múltiples."""
+    """Evalúa señales y gestiona cierres con control de duplicados y entradas múltiples (H1)."""
     kl = get_klines(symbol, "1h", 200)
     if not kl:
-        print(f"⚠️ {symbol}: sin datos de velas, se omite.")
         return None
-
     closes = [x["c"] for x in kl]
     vols = [x["v"] for x in kl]
     p = closes[-1]
@@ -372,24 +366,17 @@ def evaluate_symbol(symbol):
     s_slow = sma(closes, params["SMA_SLOW"])
     _atr = atr(kl, params["ATR_LEN"])
     v_avg = avg(vols, params["VOL_LEN"])
-
     if any(x is None for x in [s_fast, s_slow, _atr, v_avg]):
-        print(f"⚠️ {symbol}: datos insuficientes para cálculo SMA/ATR.")
         return None
 
     v_last = vols[-1]
-    vol_ok = v_last >= 1 * v_avg
+    vol_ok = v_last >= params.get("MIN_VOL_RATIO", 1.0) * v_avg
     pull_ok = abs(p - s_fast) <= _atr * params["PULLBACK_ATR"]
-
-    print(f"🔎 {symbol}: price={p:.2f}, s_fast={s_fast:.2f}, s_slow={s_slow:.2f}, "
-          f"ATR={_atr:.4f}, v_last={v_last:.2f}, v_avg={v_avg:.2f}, "
-          f"pull_ok={pull_ok}, vol_ok={vol_ok}")
 
     st = state.setdefault(symbol, {"trades": []})
     new_payloads = []
 
-    # ===== Anti-duplicado: comprobamos si ya se envió señal similar en últimas 24h =====
-    from datetime import timezone
+    # ===== Anti-duplicado últimas 24h (timezone-safe) =====
     recent_trades = []
     for t in performance.get("trades", []):
         ts_str = t.get("ts")
@@ -405,20 +392,22 @@ def evaluate_symbol(symbol):
         except Exception as e:
             print("⚠️ Error parseando timestamp trade:", e)
             continue
-
     recent_symbols = {(t["sym"], t["dir"]) for t in recent_trades}
 
     # ===== Entradas =====
     if vol_ok and pull_ok:
         # LARGO
-        if s_fast > s_slow:
-            active_longs = [tr for tr in st["trades"] if tr["open"] and tr["dir"] == "L"]
-            same_entry = any(abs(tr["entry"] - p) / p < 0.01 for tr in active_longs)
+        if s_fast and s_slow and s_fast > s_slow:
+            active_longs = [tr for tr in st["trades"] if tr.get("open") and tr["dir"] == "L"]
+            same_entry = any(abs(tr["entry"] - p) / p < 0.01 for tr in active_longs)  # ±1%
             if not same_entry and (symbol, "L") not in recent_symbols:
-                print(f"🟢 Señal LARGA detectada → {symbol} @ {p}")
                 entry = round(p, 4)
-                sl = round(entry * (1 - params["SL_PCT"]), 4)
-                tp = round(entry * (1 + params["TP_PCT"]), 4)
+                if params.get("USE_ATR_STOPS", False):
+                    sl = round(entry - params["SL_ATR_MULT"] * _atr, 4)
+                    tp = round(entry + params["TP_ATR_MULT"] * _atr, 4)
+                else:
+                    sl = round(entry * (1 - params["SL_PCT"]), 4)
+                    tp = round(entry * (1 + params["TP_PCT"]), 4)
                 trade = {"dir": "L", "entry": entry, "sl": sl, "tp": tp, "open": True}
                 st["trades"].append(trade)
                 safe_save_json(STATE_PATH, state)
@@ -428,18 +417,21 @@ def evaluate_symbol(symbol):
                     "entrada": entry, "sl": sl, "tp": tp,
                     "riesgo": params["RISK_PCT"], "timeframe": "H1",
                     "timestamp": nowiso(),
-                    "comentario": "Cruce SMAfast>SMA slow + pullback (ATR) y volumen OK."
+                    "comentario": "SMAfast>SMA slow + pullback (ATR) y volumen OK."
                 })
 
         # CORTO
-        if s_fast < s_slow:
-            active_shorts = [tr for tr in st["trades"] if tr["open"] and tr["dir"] == "S"]
+        if s_fast and s_slow and s_fast < s_slow:
+            active_shorts = [tr for tr in st["trades"] if tr.get("open") and tr["dir"] == "S"]
             same_entry = any(abs(tr["entry"] - p) / p < 0.01 for tr in active_shorts)
             if not same_entry and (symbol, "S") not in recent_symbols:
-                print(f"🔴 Señal CORTA detectada → {symbol} @ {p}")
                 entry = round(p, 4)
-                sl = round(entry * (1 + params["SL_PCT"]), 4)
-                tp = round(entry * (1 - params["TP_PCT"]), 4)
+                if params.get("USE_ATR_STOPS", False):
+                    sl = round(entry + params["SL_ATR_MULT"] * _atr, 4)
+                    tp = round(entry - params["TP_ATR_MULT"] * _atr, 4)
+                else:
+                    sl = round(entry * (1 + params["SL_PCT"]), 4)
+                    tp = round(entry * (1 - params["TP_PCT"]), 4)
                 trade = {"dir": "S", "entry": entry, "sl": sl, "tp": tp, "open": True}
                 st["trades"].append(trade)
                 safe_save_json(STATE_PATH, state)
@@ -449,11 +441,8 @@ def evaluate_symbol(symbol):
                     "entrada": entry, "sl": sl, "tp": tp,
                     "riesgo": params["RISK_PCT"], "timeframe": "H1",
                     "timestamp": nowiso(),
-                    "comentario": "Cruce SMAfast<SMA slow + pullback (ATR) y volumen OK."
+                    "comentario": "SMAfast<SMA slow + pullback (ATR) y volumen OK."
                 })
-    else:
-        print(f"⏸ {symbol}: condiciones no cumplidas → pull_ok={pull_ok}, vol_ok={vol_ok}, "
-              f"s_fast={s_fast:.2f}, s_slow={s_slow:.2f}")
 
     # ===== Gestión intrabar (TP / SL) =====
     if st["trades"]:
@@ -463,7 +452,6 @@ def evaluate_symbol(symbol):
             for tr in st["trades"]:
                 if not tr.get("open"):
                     continue
-
                 dir_ = tr["dir"]
                 sl = float(tr["sl"])
                 tp = float(tr["tp"])
@@ -472,47 +460,54 @@ def evaluate_symbol(symbol):
 
                 if dir_ == "L":
                     if cur <= sl:
-                        print(f"💀 SL tocado {sym_pair} → cerrando L @ {cur}")
+                        print(f"💀 SL tocado (intra-vela) {sym_pair} → cerrando L @ {cur}")
                         tr["open"] = False
                         record_trade(symbol, "SL", "L")
                         new_payloads.append({
-                            "evento": "cierre", "activo": sym_pair,
-                            "resultado": "SL", "precio_cierre": cur,
+                            "evento": "cierre",
+                            "activo": sym_pair,
+                            "resultado": "SL",
+                            "precio_cierre": cur,
                             "timestamp": nowiso(),
                             "comentario": f"Stop-loss alcanzado (Largo). Entrada {entry}, SL {sl}, TP {tp}"
                         })
                     elif cur >= tp:
-                        print(f"🎯 TP tocado {sym_pair} → cerrando L @ {cur}")
+                        print(f"🎯 TP tocado (intra-vela) {sym_pair} → cerrando L @ {cur}")
                         tr["open"] = False
                         record_trade(symbol, "TP", "L")
                         new_payloads.append({
-                            "evento": "cierre", "activo": sym_pair,
-                            "resultado": "TP", "precio_cierre": cur,
+                            "evento": "cierre",
+                            "activo": sym_pair,
+                            "resultado": "TP",
+                            "precio_cierre": cur,
                             "timestamp": nowiso(),
                             "comentario": f"Take-profit alcanzado (Largo). Entrada {entry}, SL {sl}, TP {tp}"
                         })
                 elif dir_ == "S":
                     if cur >= sl:
-                        print(f"💀 SL tocado {sym_pair} → cerrando S @ {cur}")
+                        print(f"💀 SL tocado (intra-vela) {sym_pair} → cerrando S @ {cur}")
                         tr["open"] = False
                         record_trade(symbol, "SL", "S")
                         new_payloads.append({
-                            "evento": "cierre", "activo": sym_pair,
-                            "resultado": "SL", "precio_cierre": cur,
+                            "evento": "cierre",
+                            "activo": sym_pair,
+                            "resultado": "SL",
+                            "precio_cierre": cur,
                             "timestamp": nowiso(),
                             "comentario": f"Stop-loss alcanzado (Corto). Entrada {entry}, SL {sl}, TP {tp}"
                         })
                     elif cur <= tp:
-                        print(f"🎯 TP tocado {sym_pair} → cerrando S @ {cur}")
+                        print(f"🎯 TP tocado (intra-vela) {sym_pair} → cerrando S @ {cur}")
                         tr["open"] = False
                         record_trade(symbol, "TP", "S")
                         new_payloads.append({
-                            "evento": "cierre", "activo": sym_pair,
-                            "resultado": "TP", "precio_cierre": cur,
+                            "evento": "cierre",
+                            "activo": sym_pair,
+                            "resultado": "TP",
+                            "precio_cierre": cur,
                             "timestamp": nowiso(),
                             "comentario": f"Take-profit alcanzado (Corto). Entrada {entry}, SL {sl}, TP {tp}"
                         })
-
                 if tr.get("open"):
                     still_open.append(tr)
 
@@ -547,7 +542,7 @@ def report_payload_market():
                f"Aciertos: {winrate:.1f}% ({wins}W/{losses}L)\n"
                f"Operaciones totales: {total}")
 
-    comentario = metrics if now_local().strftime("%H:%M") == "09:00" else "Informe de mercado (Binance + RSS)."
+    comentario = metrics if now_local().strftime("%H:%M") in {"09:00"} else "Informe de mercado (Binance + RSS)."
 
     return {
         "evento": "informe",
@@ -564,7 +559,6 @@ def report_payload_open_positions():
     today_signals = {"abiertas": [], "cerradas": []}
     today_date = now_local().date()
 
-    # Nota: performance guarda solo cerradas (TP/SL). Se deja la lógica por si en el futuro se añaden "abiertas" a performance.
     for t in performance.get("trades", []):
         ts = datetime.fromisoformat(t["ts"]).date() if "ts" in t else None
         if ts == today_date:
@@ -629,12 +623,41 @@ def send_to_make(payload, desc=""):
     return False
 
 # ==========================
+#  FLASK / ENDPOINTS
+# ==========================
+app = Flask(__name__)
+
+@app.get("/")
+def health():
+    return jsonify({
+        "status": "ok",
+        "time": nowiso(),
+        "symbols": SYMBOLS,
+        "params": params,
+        "open_state": state,
+        "perf": {
+            "wins": performance.get("wins", 0),
+            "losses": performance.get("losses", 0),
+            "n": len(performance.get("trades", []))
+        }
+    })
+
+@app.post("/force-backup")
+def force_backup():
+    try:
+        backup_all()
+        return jsonify({"ok": True, "msg": "Backup ejecutado correctamente"}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# ==========================
 #  BUCLES PRINCIPALES
 # ==========================
 def report_loop():
-    print("🕓 report loop activo → 09:00 & 21:00 (mercado), 22:00 (posiciones) hora España")
+    print("🕓 report loop activo → 09:00 & 21:00 (mercado) | backups 09:05 & 21:05 (hora Madrid)")
     last_report_min = None
     last_open_min = None
+    last_backup_min = None
     last_state_log = None
     last_heartbeat_min = None
 
@@ -643,9 +666,13 @@ def report_loop():
             now_loc = now_local()
             hhmm = now_loc.strftime("%H:%M")
 
-            # Heartbeat cada 5 min
-            if (now_loc.minute % 5 == 0) and last_heartbeat_min != hhmm:
-                print(f"💓 Heartbeat {nowiso()}")
+            # Heartbeat + auto-ping cada minuto (mantiene despierto Render)
+            if last_heartbeat_min != hhmm:
+                print(f"💓 Heartbeat {nowiso()} → ping interno")
+                try:
+                    requests.get("http://localhost:" + os.environ.get("PORT", "10000"), timeout=3)
+                except Exception:
+                    pass
                 last_heartbeat_min = hhmm
 
             # Log de operaciones abiertas cada hora
@@ -664,28 +691,28 @@ def report_loop():
             if hhmm in REPORT_TIMES_LOCAL and last_report_min != hhmm:
                 payload = report_payload_market()
                 send_to_make(payload, desc=f"informe {hhmm}")
-                print(f"📤 Informe 12h procesado ({hhmm} local).")
+                print(f"📤 Informe procesado ({hhmm} local).")
                 auto_tune()
                 last_report_min = hhmm
 
-            # Informe posiciones abiertas
-            if hhmm == OPEN_REPORT_LOCAL and last_open_min != hhmm:
+            # (Opcional) informe posiciones abiertas
+            if OPEN_REPORT_LOCAL and hhmm == OPEN_REPORT_LOCAL and last_open_min != hhmm:
                 payload = report_payload_open_positions()
                 send_to_make(payload, desc="resumen posiciones")
                 print(f"📤 Informe de posiciones abiertas procesado ({hhmm} local).")
                 last_open_min = hhmm
 
-            # 🚫 Backup automático desactivado (manual vía endpoint)
-            # if hhmm == BACKUP_TIME_LOCAL and last_backup_min != hhmm:
-            #     backup_all()
-            #     last_backup_min = hhmm
+            # Backups automáticos (directo a Sheets)
+            if hhmm in BACKUP_TIMES_LOCAL and last_backup_min != hhmm:
+                backup_all()
+                last_backup_min = hhmm
 
         except Exception as e:
             print("report error:", e)
         time.sleep(15)
 
 def scan_loop():
-    print(f"🌀 scan loop: {LOOP_SECONDS}s | rotación 1 símbolo/iteración")
+    print(f"🌀 scan loop: {LOOP_SECONDS}s | rotación 1 símbolo/iteración | activos={','.join(SYMBOLS)} | TF=H1")
     idx = 0
     while True:
         try:
@@ -704,43 +731,27 @@ def scan_loop():
         time.sleep(LOOP_SECONDS + uniform(0.5, 1.5))
 
 # ==========================
-#  FLASK / MAIN
+#  MAIN (Web Service)
 # ==========================
-app = Flask(__name__)
-
-@app.get("/")
-def health():
-    return jsonify({
-        "status": "ok", "time": nowiso(), "symbols": SYMBOLS,
-        "params": params,
-        "open_state": state,
-        "perf": {"wins": performance["wins"], "losses": performance["losses"], "n": len(performance["trades"])}
-    })
-
-def start_threads():
-    threading.Thread(target=scan_loop, daemon=True).start()
-    threading.Thread(target=report_loop, daemon=True).start()
-
-@app.post("/force-backup")
-def force_backup():
-    """Permite forzar el backup manualmente desde PowerShell o navegador."""
-    try:
-        backup_all()
-        return jsonify({"ok": True, "msg": "Backup ejecutado correctamente"}), 200
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
 if __name__ == "__main__":
-    print("🚀 Iniciando agente Cripto AI con métricas, backup y autoaprendizaje…")
+    print("🚀 Iniciando agente Cripto AI (Web Service) con métricas, backups (Sheets) y autoaprendizaje…")
     restored = restore_last_backup()
     if not restored:
         print("⚠️ No se pudo restaurar backup remoto, usando estado local.")
     if SEND_TEST_ON_DEPLOY:
-        requests.post(WEBHOOK_URL, json={
-            "evento": "nueva_senal", "tipo": "Largo", "activo": "BTC/USD",
-            "entrada": 123100, "sl": 119407, "tp": 130,  # valores dummy
-            "riesgo": params["RISK_PCT"], "timeframe": "H1",
-            "timestamp": nowiso(), "comentario": "Prueba de despliegue (Render)."
-        })
-    start_threads()
+        try:
+            requests.post(WEBHOOK_URL, json={
+                "evento": "nueva_senal", "tipo": "Largo", "activo": "BTC/USD",
+                "entrada": 123100, "sl": 119407, "tp": 130,  # valores dummy
+                "riesgo": params["RISK_PCT"], "timeframe": "H1",
+                "timestamp": nowiso(), "comentario": "Prueba de despliegue (Render Web Service)."
+            }, timeout=10)
+        except Exception as e:
+            print("⚠️ No se pudo enviar prueba de despliegue:", e)
+
+    # Lanzar hilos
+    threading.Thread(target=scan_loop, daemon=True).start()
+    threading.Thread(target=report_loop, daemon=True).start()
+
+    # Servidor Flask
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
