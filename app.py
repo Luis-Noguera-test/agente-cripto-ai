@@ -24,13 +24,13 @@ WEBHOOK_URL = os.environ.get(
 # Apps Script de Google (POST para guardar backups en Sheets)
 BACKUP_POST_URL = os.environ.get(
     "BACKUP_POST_URL",
-    "https://script.google.com/macros/s/AKfycbytxQTl2_s-LCwhYcGPdjZAL7_0ZILz4eRgcKH4y6ZDVA8foYDmL0AagndW2nHAOA8s/exec"
+    "https://script.google.com/macros/s/AKfycbwRGci2SoE3hh4IXZRtQbqUtsyN3yqxcijgRkgKNg0bs8Mx9YiIqwfquiiCaxs8JDae/exec"
 )
 
 # Apps Script de Google (GET para restaurar backups desde Sheets)
 BACKUP_RESTORE_URL = os.environ.get(
     "BACKUP_RESTORE_URL",
-    "https://script.google.com/macros/s/AKfycbytxQTl2_s-LCwhYcGPdjZAL7_0ZILz4eRgcKH4y6ZDVA8foYDmL0AagndW2nHAOA8s/exec"
+    "https://script.google.com/macros/s/AKfycbwRGci2SoE3hh4IXZRtQbqUtsyN3yqxcijgRkgKNg0bs8Mx9YiIqwfquiiCaxs8JDae/exec"
 )
 
 # Activos (actualizado): BTC, ETH, SOL, AVAX, BNB
