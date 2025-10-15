@@ -262,79 +262,93 @@ def fear_greed():
     except: return None, None
 
 # ==========================
-#  BACKUP Y RESTORE COMPLETOS (STATE + PERFORMANCE + PARAMS)
+#  BACKUP AUTOMÁTICO A GOOGLE DRIVE (STATE + PERFORMANCE + PARAMS)
 # ==========================
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google.oauth2.credentials import Credentials
+
+# ID de la carpeta de Google Drive donde guardar los backups
+DRIVE_FOLDER_ID = "19nbrjd5khqb9J7uJ7HXjJZ_6c8LslbZU"  # <-- reemplaza con el ID real de tu carpeta Drive
+
+def get_drive_service():
+    """Autentica con Google Drive usando el token local (token.pkl)."""
+    try:
+        creds = Credentials.from_authorized_user_file("token.pkl", ["https://www.googleapis.com/auth/drive.file"])
+        service = build("drive", "v3", credentials=creds)
+        return service
+    except Exception as e:
+        print(f"❌ Error autenticando con Google Drive: {e}")
+        return None
+
 def backup_all():
     """
-    Envía copias de seguridad (state.json, performance.json, params.json)
-    directamente al Apps Script de Google Sheets (BACKUP_POST_URL).
-    Espera que el Apps Script implemente doPost y reciba JSON con:
-    { "timestamp", "file_name", "contenido" } por cada archivo.
+    Sube state.json, performance.json y params.json a Google Drive.
+    Crea copias independientes en la carpeta especificada.
     """
     try:
+        service = get_drive_service()
+        if not service:
+            print("⚠️ No se pudo conectar con Google Drive.")
+            return
+
         files_to_backup = [STATE_PATH, PERF_PATH, PARAMS_PATH]
+        timestamp = nowiso().replace(":", "-")
+
         for path in files_to_backup:
             if not os.path.exists(path):
                 print(f"⚠️ No existe {path}, se omite backup.")
                 continue
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            payload = {
-                "timestamp": nowiso(),
-                "file_name": os.path.basename(path),
-                "contenido": content
-            }
-            try:
-                r = requests.post(BACKUP_POST_URL, json=payload, timeout=15)
-                if 200 <= r.status_code < 300:
-                    print(f"💾 Backup enviado a Sheets ({path}) ✓")
-                else:
-                    print(f"⚠️ Error HTTP {r.status_code} enviando backup de {path}: {r.text[:160]}")
-            except Exception as e:
-                print(f"❌ Error enviando backup de {path}: {e}")
+
+            filename = f"{os.path.basename(path).replace('.json', '')}_{timestamp}.json"
+            file_metadata = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
+            media = MediaFileUpload(path, mimetype="application/json")
+
+            service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+            print(f"☁️ Backup subido a Google Drive → {filename}")
+
     except Exception as e:
-        print(f"❌ Error al ejecutar backup_all(): {e}")
+        print(f"❌ Error al realizar backup: {e}")
 
 def restore_last_backup():
     """
-    Recupera últimos backups remotos (state.json, performance.json y params.json) desde Apps Script (GET).
-    Formato esperado (JSON):
-    { "archivos": [ {"file_name": "...", "contenido": "..."}, ... ] }
+    Restaura los archivos más recientes (state, performance, params)
+    encontrados en la carpeta de Google Drive indicada.
     """
     try:
-        print("🔄 Intentando recuperar último backup remoto...")
-        r = requests.get(BACKUP_RESTORE_URL, timeout=20)
-        if r.status_code != 200:
-            print(f"⚠️ Respuesta HTTP inesperada: {r.status_code}")
+        service = get_drive_service()
+        if not service:
+            print("⚠️ No se pudo conectar con Google Drive para restaurar.")
             return False
-        data = r.json()
-        archivos = data.get("archivos") or []
-        if not archivos:
-            # Compatibilidad con formato antiguo {"contenido": "..."}
-            contenido = data.get("contenido")
-            if contenido:
-                with open(STATE_PATH, "w", encoding="utf-8") as f:
-                    f.write(contenido)
-                print("✅ Backup antiguo restaurado (solo state.json).")
-                return True
-            print("⚠️ No se encontraron archivos en el backup remoto.")
+
+        files = service.files().list(
+            q=f"'{DRIVE_FOLDER_ID}' in parents and mimeType='application/json'",
+            orderBy="modifiedTime desc",
+            pageSize=10,
+            fields="files(id, name, modifiedTime)"
+        ).execute().get("files", [])
+
+        if not files:
+            print("⚠️ No se encontraron backups en Google Drive.")
             return False
-        restored_any = False
-        for item in archivos:
-            nombre = item.get("file_name")
-            contenido = item.get("contenido")
-            if not (nombre and contenido):
-                continue
-            with open(nombre, "w", encoding="utf-8") as f:
-                f.write(contenido)
-            print(f"✅ Backup restaurado → {nombre}")
-            restored_any = True
-        if not restored_any:
+
+        restored = 0
+        for f in files:
+            name = f["name"]
+            if any(name.startswith(x.replace(".json", "")) for x in [STATE_PATH, PERF_PATH, PARAMS_PATH]):
+                request = service.files().get_media(fileId=f["id"])
+                with open(name.split("_")[0] + ".json", "wb") as fh:
+                    fh.write(request.execute())
+                print(f"✅ Restaurado desde Drive → {name}")
+                restored += 1
+
+        if restored == 0:
             print("⚠️ Ningún archivo restaurado del backup remoto.")
             return False
         return True
+
     except Exception as e:
-        print(f"❌ Error al restaurar backup: {e}")
+        print(f"❌ Error al restaurar desde Google Drive: {e}")
         return False
 
 # ==========================
@@ -731,13 +745,19 @@ def scan_loop():
         time.sleep(LOOP_SECONDS + uniform(0.5, 1.5))
 
 # ==========================
-#  MAIN (Web Service)
+#  MAIN (Web Service con Backup en Google Drive)
 # ==========================
 if __name__ == "__main__":
-    print("🚀 Iniciando agente Cripto AI (Web Service) con métricas, backups (Sheets) y autoaprendizaje…")
+    print("🚀 Iniciando agente Cripto AI (Web Service) con métricas, backup en Google Drive y autoaprendizaje…")
+
+    # Restaurar automáticamente el último backup desde Google Drive
     restored = restore_last_backup()
-    if not restored:
+    if restored:
+        print("✅ Backup restaurado correctamente desde Google Drive.")
+    else:
         print("⚠️ No se pudo restaurar backup remoto, usando estado local.")
+
+    # Envío de prueba (solo en despliegue)
     if SEND_TEST_ON_DEPLOY:
         try:
             requests.post(WEBHOOK_URL, json={
@@ -746,28 +766,49 @@ if __name__ == "__main__":
                 "riesgo": params["RISK_PCT"], "timeframe": "H1",
                 "timestamp": nowiso(), "comentario": "Prueba de despliegue (Render Web Service)."
             }, timeout=10)
+            print("📤 Señal de prueba enviada correctamente al canal.")
         except Exception as e:
             print("⚠️ No se pudo enviar prueba de despliegue:", e)
 
-    # Lanzar hilos
+    # Lanzar hilos principales
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=report_loop, daemon=True).start()
 
     # Servidor Flask
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
-    
+
+
+# ==========================
+#  ENDPOINT MANUAL (opcional)
+# ==========================
 @app.post("/restore-state")
 def restore_state():
+    """
+    Endpoint opcional para restaurar manualmente los backups desde Google Drive.
+    Solo restaura state.json (útil para pruebas o mantenimiento).
+    """
     try:
-        data = requests.get(os.environ.get("BACKUP_RESTORE_URL"), timeout=10).json()
-        archivos = data.get("archivos", [])
-        for item in archivos:
-            if item.get("file_name") == "state.json":
-                with open("state.json", "w", encoding="utf-8") as f:
-                    f.write(item["contenido"])
-                print("✅ state.json restaurado manualmente desde Google Sheets")
-                return jsonify({"ok": True, "msg": "state.json restaurado"}), 200
-        return jsonify({"ok": False, "msg": "state.json no encontrado"}), 404
+        service = get_drive_service()
+        if not service:
+            return jsonify({"ok": False, "error": "No se pudo conectar con Google Drive"}), 500
+
+        files = service.files().list(
+            q=f"'{DRIVE_FOLDER_ID}' in parents and name contains 'state_'",
+            orderBy="modifiedTime desc",
+            pageSize=1,
+            fields="files(id, name)"
+        ).execute().get("files", [])
+
+        if not files:
+            return jsonify({"ok": False, "msg": "No se encontró ningún state.json en Drive"}), 404
+
+        f = files[0]
+        request = service.files().get_media(fileId=f["id"])
+        with open("state.json", "wb") as fh:
+            fh.write(request.execute())
+        print(f"✅ state.json restaurado manualmente desde Drive → {f['name']}")
+        return jsonify({"ok": True, "msg": f"state.json restaurado desde {f['name']}"}), 200
+
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
