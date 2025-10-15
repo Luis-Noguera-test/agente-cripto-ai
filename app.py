@@ -762,70 +762,63 @@ def scan_loop():
         time.sleep(LOOP_SECONDS + uniform(0.5, 1.5))
 
 # ==========================
-#  MAIN (Web Service con Backup en Google Drive)
+#  MAIN (Web Service)
 # ==========================
 if __name__ == "__main__":
-    print("🚀 Iniciando agente Cripto AI (Web Service) con métricas, backup en Google Drive y autoaprendizaje…")
+    print("🚀 Iniciando agente Cripto AI (Web Service) con métricas, backups (Sheets/Drive) y autoaprendizaje…")
 
-    # Restaurar automáticamente el último backup desde Google Drive
+    # 🔹 Forzar guardado inicial de los archivos locales para evitar errores "no existe"
+    safe_save_json(STATE_PATH, state)
+    safe_save_json(PERF_PATH, performance)
+    safe_save_json(PARAMS_PATH, params)
+    print("💾 Archivos locales inicializados: state.json, performance.json, params.json")
+
+    # 🔹 Intentar restaurar backup remoto (si existe)
     restored = restore_last_backup()
-    if restored:
-        print("✅ Backup restaurado correctamente desde Google Drive.")
-    else:
+    if not restored:
         print("⚠️ No se pudo restaurar backup remoto, usando estado local.")
 
-    # Envío de prueba (solo en despliegue)
+    # 🔹 Envío de prueba al desplegar (solo si está habilitado)
     if SEND_TEST_ON_DEPLOY:
         try:
             requests.post(WEBHOOK_URL, json={
                 "evento": "nueva_senal", "tipo": "Largo", "activo": "BTC/USD",
-                "entrada": 123100, "sl": 119407, "tp": 130,  # valores dummy
+                "entrada": 123100, "sl": 119407, "tp": 130,
                 "riesgo": params["RISK_PCT"], "timeframe": "H1",
                 "timestamp": nowiso(), "comentario": "Prueba de despliegue (Render Web Service)."
             }, timeout=10)
-            print("📤 Señal de prueba enviada correctamente al canal.")
+            print("📤 Señal de prueba enviada al webhook correctamente.")
         except Exception as e:
             print("⚠️ No se pudo enviar prueba de despliegue:", e)
 
-    # Lanzar hilos principales
+    # 🔹 Lanzar los bucles principales en hilos
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=report_loop, daemon=True).start()
 
-    # Servidor Flask
+    # 🔹 Servidor Flask (para ping, /force-backup, /restore-state)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
 
 
 # ==========================
-#  ENDPOINT MANUAL (opcional)
+#  ENDPOINT RESTAURACIÓN MANUAL
 # ==========================
 @app.post("/restore-state")
 def restore_state():
     """
-    Endpoint opcional para restaurar manualmente los backups desde Google Drive.
-    Solo restaura state.json (útil para pruebas o mantenimiento).
+    Permite restaurar manualmente el archivo state.json desde el backup remoto (Sheets/Drive).
     """
     try:
-        service = get_drive_service()
-        if not service:
-            return jsonify({"ok": False, "error": "No se pudo conectar con Google Drive"}), 500
-
-        files = service.files().list(
-            q=f"'{DRIVE_FOLDER_ID}' in parents and name contains 'state_'",
-            orderBy="modifiedTime desc",
-            pageSize=1,
-            fields="files(id, name)"
-        ).execute().get("files", [])
-
-        if not files:
-            return jsonify({"ok": False, "msg": "No se encontró ningún state.json en Drive"}), 404
-
-        f = files[0]
-        request = service.files().get_media(fileId=f["id"])
-        with open("state.json", "wb") as fh:
-            fh.write(request.execute())
-        print(f"✅ state.json restaurado manualmente desde Drive → {f['name']}")
-        return jsonify({"ok": True, "msg": f"state.json restaurado desde {f['name']}"}), 200
-
+        data = requests.get(os.environ.get("BACKUP_RESTORE_URL"), timeout=10).json()
+        archivos = data.get("archivos", [])
+        for item in archivos:
+            if item.get("file_name") == "state.json":
+                with open("state.json", "w", encoding="utf-8") as f:
+                    f.write(item["contenido"])
+                print("✅ state.json restaurado manualmente desde Google Sheets/Drive")
+                return jsonify({"ok": True, "msg": "state.json restaurado"}), 200
+        return jsonify({"ok": False, "msg": "state.json no encontrado"}), 404
     except Exception as e:
+        print("❌ Error en /restore-state:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
