@@ -293,16 +293,33 @@ from google.oauth2.credentials import Credentials
 
 # ID de la carpeta de Google Drive donde guardar los backups
 DRIVE_FOLDER_ID = "19nbrjd5khqb9J7uJ7HXjJZ_6c8LslbZU"  # <-- reemplaza con tu ID real de Drive
+TOKEN_FILE = "token.pkl"
 
+# ==========================
+#  ASEGURAR ARCHIVOS LOCALES EN RENDER
+# ==========================
+def ensure_local_files():
+    """Garantiza que existan los archivos locales esenciales antes de iniciar."""
+    try:
+        for path in [STATE_PATH, PERF_PATH, PARAMS_PATH]:
+            if not os.path.exists(path):
+                with open(path, "w", encoding="utf-8") as f:
+                    if "state" in path:
+                        f.write(json.dumps({s: {"trades": []} for s in SYMBOLS}, indent=2))
+                    elif "performance" in path:
+                        f.write(json.dumps({"wins": 0, "losses": 0, "trades": []}, indent=2))
+                    elif "params" in path:
+                        f.write(json.dumps(params, indent=2))
+                print(f"📁 Creado archivo local vacío: {path}")
+    except Exception as e:
+        print(f"❌ Error creando archivos locales: {e}")
+        
 def get_drive_service():
-    """
-    Autentica con Google Drive usando el token local.
-    En Render normalmente no hay token.pkl, así que se ignora sin error.
-    """
+    """Autentica con Google Drive usando token.pkl (solo disponible localmente)."""
     try:
         token_path = TOKEN_FILE if os.path.exists(TOKEN_FILE) else "token.pkl"
         if not os.path.exists(token_path):
-            print("⚠️ No se encontró token.pkl, se omite conexión a Google Drive.")
+            print("⚠️ No se encontró token.pkl, se omite conexión a Google Drive (modo Render).")
             return None
         creds = Credentials.from_authorized_user_file(token_path, ["https://www.googleapis.com/auth/drive.file"])
         service = build("drive", "v3", credentials=creds)
@@ -311,21 +328,17 @@ def get_drive_service():
         print(f"❌ Error autenticando con Google Drive: {e}")
         return None
 
-
 def backup_all():
-    """
-    Sube state.json, performance.json y params.json a Google Drive.
-    Si no hay token (Render), se omite sin error.
-    """
+    """Sube los tres archivos principales al Drive si hay token disponible."""
     try:
-        print(f"🗂️ Intentando respaldar archivos desde {BASE_DIR} ...")
+        ensure_local_files()
         service = get_drive_service()
         if not service:
-            print("⚠️ No se pudo conectar con Google Drive (token ausente o inválido).")
+            print("⚠️ Backup omitido: Render sin token de Drive.")
             return
 
-        files_to_backup = [STATE_PATH, PERF_PATH, PARAMS_PATH]
         timestamp = nowiso().replace(":", "-")
+        files_to_backup = [STATE_PATH, PERF_PATH, PARAMS_PATH]
 
         for path in files_to_backup:
             if not os.path.exists(path):
@@ -335,30 +348,19 @@ def backup_all():
             filename = f"{os.path.basename(path).replace('.json', '')}_{timestamp}.json"
             file_metadata = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
             media = MediaFileUpload(path, mimetype="application/json")
-
             service.files().create(body=file_metadata, media_body=media, fields="id").execute()
             print(f"☁️ Backup subido a Google Drive → {filename}")
 
         print("✅ Backup automático completado correctamente.")
-
     except Exception as e:
         print(f"❌ Error al realizar backup: {e}")
 
-
 def restore_last_backup():
-    """
-    Restaura los archivos más recientes (state, performance, params)
-    encontrados en la carpeta de Google Drive indicada.
-    """
+    """Restaura los archivos más recientes desde la carpeta de Drive."""
     try:
-        token_path = TOKEN_FILE if os.path.exists(TOKEN_FILE) else "token.pkl"
-        if not os.path.exists(token_path):
-            print("⚠️ Render no tiene token.pkl, se omite intento de restauración desde Drive.")
-            return False
-
         service = get_drive_service()
         if not service:
-            print("⚠️ No se pudo conectar con Google Drive para restaurar.")
+            print("⚠️ No se pudo conectar a Drive para restaurar (sin token).")
             return False
 
         files = service.files().list(
@@ -374,26 +376,23 @@ def restore_last_backup():
 
         restored = 0
         for f in files:
-            name = f["name"]
-            # Extraer base name: state, performance o params
-            base_name = name.split("_")[0] + ".json"
-            local_path = os.path.join(BASE_DIR, base_name)
-            if base_name in ["state.json", "performance.json", "params.json"]:
+            base = f["name"].split("_")[0]
+            if base in ["state", "performance", "params"]:
                 request = service.files().get_media(fileId=f["id"])
-                with open(local_path, "wb") as fh:
+                with open(f"{base}.json", "wb") as fh:
                     fh.write(request.execute())
-                print(f"✅ Restaurado desde Drive → {base_name}")
+                print(f"✅ Restaurado desde Drive → {base}.json")
                 restored += 1
 
         if restored == 0:
             print("⚠️ Ningún archivo restaurado del backup remoto.")
             return False
 
-        print("♻️ Restauración desde Google Drive completada.")
+        print("♻️ Restauración completa desde Google Drive.")
         return True
 
     except Exception as e:
-        print(f"❌ Error al restaurar desde Google Drive: {e}")
+        print(f"❌ Error al restaurar desde Drive: {e}")
         return False
 
 # ==========================
@@ -810,71 +809,47 @@ def scan_loop():
 #  MAIN (Web Service)
 # ==========================
 if __name__ == "__main__":
-    print("🚀 Iniciando agente Cripto AI (Web Service) con métricas, backups (Sheets/Drive) y autoaprendizaje…")
+    print("🚀 Iniciando Agente Cripto AI (Web Service) con métricas, backups y autoaprendizaje…")
 
-    # Asegurar carpeta temporal y archivos
+    # 1️⃣ Garantizar archivos locales iniciales
     ensure_local_files()
 
-    # Restaurar backup remoto (si hay token válido)
+    # 2️⃣ Intentar restaurar backup desde Drive
     restored = restore_last_backup()
     if not restored:
-        print("⚠️ No se pudo restaurar backup remoto, usando estado local.")
+        print("⚠️ No se pudo restaurar desde Drive, usando estado local inicial.")
 
-    # Envío de prueba al desplegar
-    if SEND_TEST_ON_DEPLOY:
-        try:
-            requests.post(WEBHOOK_URL, json={
-                "evento": "nueva_senal", "tipo": "Largo", "activo": "BTC/USD",
-                "entrada": 123100, "sl": 119407, "tp": 130,
-                "riesgo": params["RISK_PCT"], "timeframe": "H1",
-                "timestamp": nowiso(), "comentario": "Prueba de despliegue (Render Web Service)."
-            }, timeout=10)
-            print("📤 Señal de prueba enviada al webhook correctamente.")
-        except Exception as e:
-            print("⚠️ No se pudo enviar prueba de despliegue:", e)
-
-    # Lanzar los bucles principales
+    # 3️⃣ Iniciar hilos principales
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=report_loop, daemon=True).start()
 
-    # Servidor Flask (ping + endpoints)
+    # 4️⃣ Servidor Flask
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
-
+    
 # ==========================
 #  ENDPOINT: BACKUP MANUAL (descarga desde Render)
 # ==========================
 @app.post("/force-backup")
 def force_backup():
+    """Devuelve los archivos locales actuales para el script manual."""
     try:
-        print("🧩 Solicitud de backup forzado recibida (manual o externa).")
-
-        # Asegurar que los archivos locales existen
         ensure_local_files()
-
-        # Ejecutar backup interno (Drive si aplica)
-        print("📦 Iniciando proceso de backup interno...")
         backup_all()
 
-        # Leer los archivos locales actuales
         archivos = []
         for path in [STATE_PATH, PERF_PATH, PARAMS_PATH]:
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
                     contenido = f.read()
-                archivos.append({
-                    "file_name": os.path.basename(path),
-                    "contenido": contenido
-                })
+                archivos.append({"file_name": os.path.basename(path), "contenido": contenido})
             else:
-                print(f"⚠️ {path} no existe, no se incluye en la respuesta.")
+                print(f"⚠️ {path} no existe, se omite en la respuesta.")
 
-        # Devolver JSON con todos los contenidos locales
         print("📤 Backup forzado completado y datos devueltos al cliente.")
         return jsonify({"archivos": archivos, "timestamp": nowiso(), "status": "ok"}), 200
 
     except Exception as e:
         print(f"❌ Error en force-backup: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
-
 
 
