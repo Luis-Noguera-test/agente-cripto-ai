@@ -45,11 +45,11 @@ REPORT_TIMES_LOCAL = {"09:00", "21:00"}
 BACKUP_TIMES_LOCAL = {"09:05", "21:05"}
 OPEN_REPORT_LOCAL = "22:00"  # opcional, se mantiene por compatibilidad
 
-# Rutas de archivos locales
-STATE_PATH  = "state.json"
-PERF_PATH   = "performance.json"
-CACHE_PATH  = "cache.json"
-PARAMS_PATH = "params.json"
+# Rutas de archivos locales (Render → usar carpeta temporal con permisos de escritura)
+STATE_PATH  = "/tmp/state.json"
+PERF_PATH   = "/tmp/performance.json"
+CACHE_PATH  = "/tmp/cache.json"
+PARAMS_PATH = "/tmp/params.json"
 
 # Endpoints Binance
 BINANCE_ENDPOINTS = [
