@@ -636,31 +636,28 @@ def force_backup():
 
 @app.post("/restore-state")
 def restore_state():
-    """Restaura state.json, performance.json y params.json desde cliente (script manual)."""
+    """
+    Permite restaurar archivos individuales (state.json, performance.json, params.json)
+    enviados desde el script de restauración manual.
+    """
     try:
         data = request.get_json(force=True)
-        archivos = data.get("archivos", [])
-        if not archivos:
-            return jsonify({"ok": False, "msg": "Sin archivos recibidos"}), 400
+        file_name = data.get("file_name")
+        contenido = data.get("contenido")
 
-        restored_files = []
-        for item in archivos:
-            nombre, contenido = item.get("file_name"), item.get("contenido")
-            if not nombre or not contenido: continue
-            path = os.path.join(BASE_DIR, nombre)
-            with open(path, "w", encoding="utf-8") as f: f.write(contenido)
-            restored_files.append(nombre)
+        if not file_name or not contenido:
+            return jsonify({"ok": False, "error": "Faltan campos en el payload"}), 400
 
-        # recargar en memoria
-        global state, performance, params
-        if "state.json" in restored_files:      state = safe_load_json(STATE_PATH, state)
-        if "performance.json" in restored_files: performance = safe_load_json(PERF_PATH, performance)
-        if "params.json" in restored_files:      params = safe_load_json(PARAMS_PATH, params)
+        # Guardar el archivo en /tmp o raíz
+        save_path = os.path.join("/tmp", file_name)
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(contenido)
 
-        print(f"✅ Restaurados manualmente: {', '.join(restored_files)}")
-        return jsonify({"ok": True, "restaurados": restored_files}), 200
+        print(f"✅ {file_name} restaurado manualmente desde cliente remoto → {save_path}")
+        return jsonify({"ok": True, "msg": f"{file_name} restaurado correctamente"}), 200
+
     except Exception as e:
-        print(f"❌ Error en restore-state: {e}")
+        print(f"❌ Error al restaurar archivo recibido: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # ==========================
