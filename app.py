@@ -841,25 +841,40 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
 
 # ==========================
-#  ENDPOINT RESTAURACIÓN MANUAL
+#  ENDPOINT: BACKUP MANUAL (descarga desde Render)
 # ==========================
-@app.post("/restore-state")
-def restore_state():
-    """
-    Permite restaurar manualmente el archivo state.json desde el backup remoto (Sheets/Drive).
-    """
+@app.post("/force-backup")
+def force_backup():
     try:
-        data = requests.get(os.environ.get("BACKUP_RESTORE_URL"), timeout=10).json()
-        archivos = data.get("archivos", [])
-        for item in archivos:
-            if item.get("file_name") == "state.json":
-                with open("state.json", "w", encoding="utf-8") as f:
-                    f.write(item["contenido"])
-                print("✅ state.json restaurado manualmente desde Google Sheets/Drive")
-                return jsonify({"ok": True, "msg": "state.json restaurado"}), 200
-        return jsonify({"ok": False, "msg": "state.json no encontrado"}), 404
+        print("🧩 Solicitud de backup forzado recibida (manual o externa).")
+
+        # Asegurar que los archivos locales existen
+        ensure_local_files()
+
+        # Ejecutar backup interno (Drive si aplica)
+        print("📦 Iniciando proceso de backup interno...")
+        backup_all()
+
+        # Leer los archivos locales actuales
+        archivos = []
+        for path in [STATE_PATH, PERF_PATH, PARAMS_PATH]:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    contenido = f.read()
+                archivos.append({
+                    "file_name": os.path.basename(path),
+                    "contenido": contenido
+                })
+            else:
+                print(f"⚠️ {path} no existe, no se incluye en la respuesta.")
+
+        # Devolver JSON con todos los contenidos locales
+        print("📤 Backup forzado completado y datos devueltos al cliente.")
+        return jsonify({"archivos": archivos, "timestamp": nowiso(), "status": "ok"}), 200
+
     except Exception as e:
-        print("❌ Error en /restore-state:", e)
+        print(f"❌ Error en force-backup: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 
