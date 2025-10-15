@@ -485,26 +485,35 @@ def get_drive_service():
         return None
 
 def backup_all():
-    """Sube state/performance/params a Drive si hay token local (uso típico: script manual en tu PC)."""
+    """Guarda copias de state.json, performance.json y params.json en Google Drive con estructura completa."""
     try:
-        ensure_local_files()
         service = get_drive_service()
         if not service:
-            print("⚠️ Backup omitido (sin token Drive).")
+            print("⚠️ No se pudo conectar con Google Drive.")
             return
-        from googleapiclient.http import MediaFileUpload
-        ts = nowiso().replace(":", "-")
-        for path in [STATE_PATH, PERF_PATH, PARAMS_PATH]:
-            if not os.path.exists(path): 
-                print(f"⚠️ No existe {path}, se omite.")
-                continue
-            meta = {"name": f"{os.path.basename(path).replace('.json','')}_{ts}.json", "parents":[DRIVE_FOLDER_ID]}
-            media = MediaFileUpload(path, mimetype="application/json")
-            service.files().create(body=meta, media_body=media, fields="id").execute()
-            print(f"☁️ Subido a Drive → {meta['name']}")
-        print("✅ Backup completado.")
+
+        # Datos actuales del bot
+        backup_data = {
+            "state.json": {"open_state": state},
+            "performance.json": {"performance": performance},
+            "params.json": {"params": params}
+        }
+
+        timestamp = nowiso().replace(":", "-")
+
+        for filename, content in backup_data.items():
+            temp_path = f"/tmp/{filename}"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(content, f, ensure_ascii=False, indent=2)
+
+            final_name = f"{filename.replace('.json', '')}_{timestamp}.json"
+            file_metadata = {"name": final_name, "parents": [DRIVE_FOLDER_ID]}
+            media = MediaFileUpload(temp_path, mimetype="application/json")
+            service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+            print(f"☁️ Backup subido a Google Drive → {final_name}")
+
     except Exception as e:
-        print(f"❌ Error backup_all: {e}")
+        print(f"❌ Error al realizar backup: {e}")
 
 def restore_last_backup():
     """Restaura el último backup desde Drive (si hay token)."""
