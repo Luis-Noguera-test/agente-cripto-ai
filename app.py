@@ -292,27 +292,36 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 
 # ID de la carpeta de Google Drive donde guardar los backups
-DRIVE_FOLDER_ID = "19nbrjd5khqb9J7uJ7HXjJZ_6c8LslbZU"  # <-- reemplaza con el ID real de tu carpeta Drive
+DRIVE_FOLDER_ID = "19nbrjd5khqb9J7uJ7HXjJZ_6c8LslbZU"  # <-- reemplaza con tu ID real de Drive
 
 def get_drive_service():
-    """Autentica con Google Drive usando el token local (token.pkl)."""
+    """
+    Autentica con Google Drive usando el token local.
+    En Render normalmente no hay token.pkl, así que se ignora sin error.
+    """
     try:
-        creds = Credentials.from_authorized_user_file("token.pkl", ["https://www.googleapis.com/auth/drive.file"])
+        token_path = TOKEN_FILE if os.path.exists(TOKEN_FILE) else "token.pkl"
+        if not os.path.exists(token_path):
+            print("⚠️ No se encontró token.pkl, se omite conexión a Google Drive.")
+            return None
+        creds = Credentials.from_authorized_user_file(token_path, ["https://www.googleapis.com/auth/drive.file"])
         service = build("drive", "v3", credentials=creds)
         return service
     except Exception as e:
         print(f"❌ Error autenticando con Google Drive: {e}")
         return None
 
+
 def backup_all():
     """
     Sube state.json, performance.json y params.json a Google Drive.
-    Crea copias independientes en la carpeta especificada.
+    Si no hay token (Render), se omite sin error.
     """
     try:
+        print(f"🗂️ Intentando respaldar archivos desde {BASE_DIR} ...")
         service = get_drive_service()
         if not service:
-            print("⚠️ No se pudo conectar con Google Drive.")
+            print("⚠️ No se pudo conectar con Google Drive (token ausente o inválido).")
             return
 
         files_to_backup = [STATE_PATH, PERF_PATH, PARAMS_PATH]
@@ -330,8 +339,11 @@ def backup_all():
             service.files().create(body=file_metadata, media_body=media, fields="id").execute()
             print(f"☁️ Backup subido a Google Drive → {filename}")
 
+        print("✅ Backup automático completado correctamente.")
+
     except Exception as e:
         print(f"❌ Error al realizar backup: {e}")
+
 
 def restore_last_backup():
     """
@@ -339,6 +351,11 @@ def restore_last_backup():
     encontrados en la carpeta de Google Drive indicada.
     """
     try:
+        token_path = TOKEN_FILE if os.path.exists(TOKEN_FILE) else "token.pkl"
+        if not os.path.exists(token_path):
+            print("⚠️ Render no tiene token.pkl, se omite intento de restauración desde Drive.")
+            return False
+
         service = get_drive_service()
         if not service:
             print("⚠️ No se pudo conectar con Google Drive para restaurar.")
@@ -358,16 +375,21 @@ def restore_last_backup():
         restored = 0
         for f in files:
             name = f["name"]
-            if any(name.startswith(x.replace(".json", "")) for x in [STATE_PATH, PERF_PATH, PARAMS_PATH]):
+            # Extraer base name: state, performance o params
+            base_name = name.split("_")[0] + ".json"
+            local_path = os.path.join(BASE_DIR, base_name)
+            if base_name in ["state.json", "performance.json", "params.json"]:
                 request = service.files().get_media(fileId=f["id"])
-                with open(name.split("_")[0] + ".json", "wb") as fh:
+                with open(local_path, "wb") as fh:
                     fh.write(request.execute())
-                print(f"✅ Restaurado desde Drive → {name}")
+                print(f"✅ Restaurado desde Drive → {base_name}")
                 restored += 1
 
         if restored == 0:
             print("⚠️ Ningún archivo restaurado del backup remoto.")
             return False
+
+        print("♻️ Restauración desde Google Drive completada.")
         return True
 
     except Exception as e:
