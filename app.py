@@ -658,10 +658,27 @@ def health():
 
 @app.post("/force-backup")
 def force_backup():
+    """Permite forzar backup manual desde PowerShell o navegador."""
     try:
+        files_to_backup = [STATE_PATH, PERF_PATH, PARAMS_PATH]
+        archivos = []
+        for path in files_to_backup:
+            if not os.path.exists(path):
+                print(f"⚠️ No existe {path}, se omite backup.")
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                contenido = f.read()
+            archivos.append({
+                "file_name": os.path.basename(path),
+                "contenido": contenido,
+                "timestamp": nowiso()
+            })
+        # Enviar a Google Sheets si quieres mantenerlo
         backup_all()
-        return jsonify({"ok": True, "msg": "Backup ejecutado correctamente"}), 200
+        print("📤 Backup forzado completado y datos devueltos al cliente.")
+        return jsonify({"ok": True, "archivos": archivos}), 200
     except Exception as e:
+        print(f"❌ Error en /force-backup: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # ==========================
