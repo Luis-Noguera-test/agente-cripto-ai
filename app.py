@@ -45,12 +45,6 @@ REPORT_TIMES_LOCAL = {"09:00", "21:00"}
 BACKUP_TIMES_LOCAL = {"09:05", "21:05"}
 OPEN_REPORT_LOCAL = "22:00"  # opcional, se mantiene por compatibilidad
 
-# Rutas de archivos locales (Render → usar carpeta temporal con permisos de escritura)
-STATE_PATH  = "/tmp/state.json"
-PERF_PATH   = "/tmp/performance.json"
-CACHE_PATH  = "/tmp/cache.json"
-PARAMS_PATH = "/tmp/params.json"
-
 # Endpoints Binance
 BINANCE_ENDPOINTS = [
     "https://api.binance.com",
@@ -59,6 +53,35 @@ BINANCE_ENDPOINTS = [
 ]
 BINANCE = BINANCE_ENDPOINTS[0]
 HEADERS = {"User-Agent": "Mozilla/5.0 (CriptoAI Bot)"}
+
+# ==========================
+#  RUTAS DE ARCHIVOS Y CONFIG LOCAL
+# ==========================
+# Carpeta local escribible en Render (ephemeral pero segura)
+BASE_DIR = os.environ.get("BOT_DATA_DIR", "/tmp")
+
+STATE_PATH  = os.path.join(BASE_DIR, "state.json")
+PERF_PATH   = os.path.join(BASE_DIR, "performance.json")
+CACHE_PATH  = os.path.join(BASE_DIR, "cache.json")
+PARAMS_PATH = os.path.join(BASE_DIR, "params.json")
+TOKEN_FILE  = os.path.join(BASE_DIR, "token.pkl")  # si en el futuro se usa Drive en Render
+
+def ensure_local_files():
+    """Crea los JSON locales si no existen, con el estado actual en memoria."""
+    os.makedirs(BASE_DIR, exist_ok=True)
+    if not os.path.exists(STATE_PATH):
+        safe_save_json(STATE_PATH, state)
+    if not os.path.exists(PERF_PATH):
+        safe_save_json(PERF_PATH, performance)
+    if not os.path.exists(PARAMS_PATH):
+        safe_save_json(PARAMS_PATH, params)
+    if not os.path.exists(CACHE_PATH):
+        safe_save_json(CACHE_PATH, {})
+    print(f"💾 Archivos locales inicializados en {BASE_DIR}:")
+    print(f"   - {STATE_PATH}")
+    print(f"   - {PERF_PATH}")
+    print(f"   - {PARAMS_PATH}")
+    
 
 # ==========================
 #  UTILIDADES
@@ -767,18 +790,15 @@ def scan_loop():
 if __name__ == "__main__":
     print("🚀 Iniciando agente Cripto AI (Web Service) con métricas, backups (Sheets/Drive) y autoaprendizaje…")
 
-    # 🔹 Forzar guardado inicial de los archivos locales para evitar errores "no existe"
-    safe_save_json(STATE_PATH, state)
-    safe_save_json(PERF_PATH, performance)
-    safe_save_json(PARAMS_PATH, params)
-    print("💾 Archivos locales inicializados: state.json, performance.json, params.json")
+    # Asegurar carpeta temporal y archivos
+    ensure_local_files()
 
-    # 🔹 Intentar restaurar backup remoto (si existe)
+    # Restaurar backup remoto (si hay token válido)
     restored = restore_last_backup()
     if not restored:
         print("⚠️ No se pudo restaurar backup remoto, usando estado local.")
 
-    # 🔹 Envío de prueba al desplegar (solo si está habilitado)
+    # Envío de prueba al desplegar
     if SEND_TEST_ON_DEPLOY:
         try:
             requests.post(WEBHOOK_URL, json={
@@ -791,13 +811,12 @@ if __name__ == "__main__":
         except Exception as e:
             print("⚠️ No se pudo enviar prueba de despliegue:", e)
 
-    # 🔹 Lanzar los bucles principales en hilos
+    # Lanzar los bucles principales
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=report_loop, daemon=True).start()
 
-    # 🔹 Servidor Flask (para ping, /force-backup, /restore-state)
+    # Servidor Flask (ping + endpoints)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
-
 
 # ==========================
 #  ENDPOINT RESTAURACIÓN MANUAL
